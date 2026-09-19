@@ -117,6 +117,14 @@ export class AuthOrchestrator {
   private refreshToken: string | undefined
   private loginAttempt: LoginAttempt | undefined
   private refreshInFlight: Promise<AuthSession> | undefined
+  /**
+   * Credential generation, bumped by every `logout()`. In-flight logins and
+   * refreshes capture it before their last await and compare before adopting
+   * credentials — an attempt that completes after a logout started is
+   * discarded instead of re-adopting a session and re-saving credentials
+   * over the wipe.
+   */
+  private generation = 0
 
   constructor(options: AuthOrchestratorOptions) {
     this.config = options.config
@@ -198,6 +206,7 @@ export class AuthOrchestrator {
     )
 
     void (async (): Promise<void> => {
+      const generation = this.generation
       try {
         const document = await this.discovery.get()
         if (cancelled) throw cancelError()
@@ -237,6 +246,8 @@ export class AuthOrchestrator {
         })
 
         const tokenSet = await poll.promise
+        // A logout while the poll was settling invalidates this attempt
+        if (this.generation !== generation) throw cancelError()
         resolveTokens(await this.applyTokenSet(tokenSet, document.issuer))
       } catch (error) {
         // Pre-handle failures reject the handle promise too; once the handle
@@ -280,6 +291,7 @@ export class AuthOrchestrator {
   }
 
   private async runRefresh(): Promise<AuthSession> {
+    const generation = this.generation
     let refreshToken = this.refreshToken
     let previous: { idToken?: string; profile?: UserProfile } = {}
     if (refreshToken === undefined) {
@@ -340,6 +352,10 @@ export class AuthOrchestrator {
         cause,
       })
     }
+    // A logout while the request was in flight invalidates this refresh
+    if (this.generation !== generation) {
+      throw new AuthFlowError('The refresh was cancelled by a logout', { code: 'cancelled' })
+    }
     return this.applyTokenSet(tokenSet, document.issuer, previous)
   }
 
@@ -350,6 +366,11 @@ export class AuthOrchestrator {
    * anything — and wipes the session, the in-memory refresh token, and the
    * store.
    *
+   * In-flight work is neutralized first: a pending login poll is cancelled,
+   * and the generation bump makes any login/refresh that is already past
+   * its last await discard its result, so no credential can be re-adopted
+   * or re-saved after the wipe.
+   *
    * Revocation and discovery are best-effort (a network outage or a 500 from
    * the revocation endpoint still logs the user out locally); the local wipe
    * is guaranteed and runs on every path. `endSessionUrl` is `undefined`
@@ -357,6 +378,10 @@ export class AuthOrchestrator {
    * for the hint.
    */
   async logout(): Promise<LogoutResult> {
+    // Synchronous, before the first await: everything below takes turns on
+    // the event loop, and an in-flight attempt must not slip past the wipe.
+    this.cancelLogin()
+    this.generation += 1
     try {
       let refreshToken = this.refreshToken
       let idToken = this.session?.idToken

@@ -160,6 +160,8 @@ interface WorldOptions {
   initialStore?: StoredTokenSet | null
   /** Replacement device-authorization route (e.g. a gated promise) */
   device?: (url: string, init?: RequestInit) => Promise<Response>
+  /** Replacement token-endpoint route (e.g. a gated promise) */
+  token?: (url: string, init?: RequestInit) => Promise<Response>
   /** Fields merged into (or removed from) the discovery document */
   discoveryOverrides?: Record<string, unknown>
   /** Fixed revocation response (default 204 No Content) */
@@ -179,7 +181,10 @@ function makeWorld(options: WorldOptions = {}) {
     options.device ??
       (async (_url: string, _init?: RequestInit) => jsonResponse(deviceAuthJson())),
   )
-  const token = queueResponses(...(options.tokenScript ?? []))
+  const token = vi.fn(
+    options.token ??
+      queueResponses(...(options.tokenScript ?? [])),
+  )
   const revocation = vi.fn(
     async (_url: string, _init?: RequestInit) =>
       options.revocation ?? new Response(null, { status: 204 }),
@@ -552,5 +557,59 @@ describe('AuthOrchestrator.logout', () => {
     expect(w.store.clear).toHaveBeenCalledTimes(1)
     expect(w.revocation).not.toHaveBeenCalled()
     expect(w.discovery).not.toHaveBeenCalled()
+  })
+
+  it('neutralizes a pending login: the poll is cancelled and nothing reappears', async () => {
+    const w = makeWorld({
+      tokenScript: [pending(), tokenSuccess()],
+      // A sleep that never resolves parks the login in its polling loop
+      sleep: () => new Promise<void>(() => {}),
+    })
+    const handle = await w.orchestrator.startLogin()
+
+    const result = await w.orchestrator.logout()
+
+    // The in-flight attempt was cancelled, not left running
+    const err = await rejectionOf(handle.tokens)
+    expect(err).toBeInstanceOf(TokenPollError)
+    expect((err as TokenPollError).code).toBe('cancelled')
+
+    // The wipe holds: nothing was saved, nothing survived in memory or store
+    expect(w.store.save).not.toHaveBeenCalled()
+    expect(w.store.clear).toHaveBeenCalledTimes(1)
+    expect(w.store.current()).toBeNull()
+    expect(result.endSessionUrl).toBeUndefined()
+    const later = await rejectionOf(w.orchestrator.refresh())
+    expect((later as AuthFlowError).code).toBe('not_logged_in')
+  })
+
+  it('discards a refresh that completes after the logout (no resurrect)', async () => {
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const w = makeWorld({
+      initialStore: storedSet(),
+      // The refresh request hangs until the logout has fully completed
+      token: async () => {
+        await gate
+        return refreshSuccess()
+      },
+    })
+
+    const refreshing = w.orchestrator.refresh()
+    await w.orchestrator.logout()
+    release()
+
+    // The late refresh result is discarded with a typed error
+    const err = await rejectionOf(refreshing)
+    expect(err).toBeInstanceOf(AuthFlowError)
+    expect((err as AuthFlowError).code).toBe('cancelled')
+
+    // No credentials were re-adopted or re-saved after the wipe
+    expect(w.store.save).not.toHaveBeenCalled()
+    expect(w.store.current()).toBeNull()
+    const later = await rejectionOf(w.orchestrator.refresh())
+    expect((later as AuthFlowError).code).toBe('not_logged_in')
   })
 })
