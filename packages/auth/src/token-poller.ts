@@ -19,7 +19,14 @@
 
 import { TokenPollError } from './errors.js'
 import { parseTokenResponse } from './token-set.js'
-import type { Clock, DeviceTokenPollHandle, DeviceTokenPollOptions, FetchLike, Sleep, TokenSet } from './types.js'
+import type {
+  Clock,
+  DeviceTokenPollHandle,
+  DeviceTokenPollOptions,
+  FetchLike,
+  Sleep,
+  TokenSet,
+} from './types.js'
 
 /** RFC 8628 §3.4 device grant type identifier */
 const DEVICE_GRANT_TYPE = 'urn:ietf:params:oauth:grant-type:device_code'
@@ -167,9 +174,12 @@ export function startDeviceTokenPoll(options: DeviceTokenPollOptions): DeviceTok
       if (cancelled) return
       if (now() >= deadline) {
         rejectPromise(
-          new TokenPollError('The device authorization expires_in elapsed before approval completed', {
-            code: 'poll_expired',
-          }),
+          new TokenPollError(
+            'The device authorization expires_in elapsed before approval completed',
+            {
+              code: 'poll_expired',
+            },
+          ),
         )
         return
       }
@@ -181,9 +191,7 @@ export function startDeviceTokenPoll(options: DeviceTokenPollOptions): DeviceTok
     cancel() {
       if (cancelled) return
       cancelled = true
-      rejectPromise(
-        new TokenPollError('Device token polling was cancelled', { code: 'cancelled' }),
-      )
+      rejectPromise(new TokenPollError('Device token polling was cancelled', { code: 'cancelled' }))
     },
   }
 }

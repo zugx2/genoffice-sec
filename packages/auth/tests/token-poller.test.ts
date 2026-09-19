@@ -174,7 +174,10 @@ describe('startDeviceTokenPoll terminal errors', () => {
 
   it('rejects with TokenPollError (http_error) on an unknown OAuth error, surfacing the code', async () => {
     const fetchFn = queueResponses(
-      jsonResponse(JSON.stringify({ error: 'invalid_grant', error_description: 'code reused' }), 400),
+      jsonResponse(
+        JSON.stringify({ error: 'invalid_grant', error_description: 'code reused' }),
+        400,
+      ),
     )
     const sleep = vi.fn(async (_ms: number) => {})
 
@@ -293,7 +296,13 @@ describe('startDeviceTokenPoll expires_in deadline', () => {
     const sleep = clockAdvancingSleep(clock)
 
     // interval 5 s, device_code valid 10 s: polls at t=0 and t=5, deadline hit at t=10
-    const handle = startDeviceTokenPoll({ ...baseOptions(), expiresIn: 10, fetchFn, sleep, now: clock.now })
+    const handle = startDeviceTokenPoll({
+      ...baseOptions(),
+      expiresIn: 10,
+      fetchFn,
+      sleep,
+      now: clock.now,
+    })
     const err = await handle.promise.then(
       () => null,
       (e: unknown) => e,
@@ -312,7 +321,13 @@ describe('startDeviceTokenPoll expires_in deadline', () => {
     const sleep = clockAdvancingSleep(clock)
 
     // interval 5 s, valid 20 s: polls at t=0, 5, 10 — all inside the window
-    const handle = startDeviceTokenPoll({ ...baseOptions(), expiresIn: 20, fetchFn, sleep, now: clock.now })
+    const handle = startDeviceTokenPoll({
+      ...baseOptions(),
+      expiresIn: 20,
+      fetchFn,
+      sleep,
+      now: clock.now,
+    })
     await expect(handle.promise).resolves.toMatchObject({ accessToken: 'access-1' })
     expect(fetchFn).toHaveBeenCalledTimes(3)
   })

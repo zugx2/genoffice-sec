@@ -35,12 +35,12 @@ Notes:
 
 ## Endpoints and credentials (all dev-only)
 
-| What | Value |
-| --- | --- |
-| Issuer | `http://localhost:8080/realms/genoffice` |
-| Discovery | `http://localhost:8080/realms/genoffice/.well-known/openid-configuration` |
-| Admin console | `http://localhost:8080/admin` (master realm) |
-| Admin login | `admin` / `admin` (bootstrap admin, set via `KC_BOOTSTRAP_ADMIN_*`) |
+| What                          | Value                                                                                         |
+| ----------------------------- | --------------------------------------------------------------------------------------------- |
+| Issuer                        | `http://localhost:8080/realms/genoffice`                                                      |
+| Discovery                     | `http://localhost:8080/realms/genoffice/.well-known/openid-configuration`                     |
+| Admin console                 | `http://localhost:8080/admin` (master realm)                                                  |
+| Admin login                   | `admin` / `admin` (bootstrap admin, set via `KC_BOOTSTRAP_ADMIN_*`)                           |
 | Test user (realm `genoffice`) | `testuser` / `testpass` — password is **non-temporary**; use it to approve device-flow logins |
 
 ## Smoke test
@@ -74,15 +74,15 @@ Realm settings / Clients / Users) if you cannot use the import.
 
 ### Realm `genoffice`
 
-| Setting | Value | Where in the admin console |
-| --- | --- | --- |
-| Realm name | `genoffice` | Create realm |
-| Enabled | on (default) | Realm settings → General |
-| Display name | `GenOffice (local dev)` | Realm settings → General |
-| Require SSL | `none` — dev-only; the stack is plain HTTP | Realm settings → General |
-| Device Code Lifespan | `600` s (Keycloak default, set explicitly) | Realm settings → Tokens |
-| Registration | disabled (default) | Realm settings → Login |
-| Login with email | allowed | Realm settings → Login |
+| Setting              | Value                                      | Where in the admin console |
+| -------------------- | ------------------------------------------ | -------------------------- |
+| Realm name           | `genoffice`                                | Create realm               |
+| Enabled              | on (default)                               | Realm settings → General   |
+| Display name         | `GenOffice (local dev)`                    | Realm settings → General   |
+| Require SSL          | `none` — dev-only; the stack is plain HTTP | Realm settings → General   |
+| Device Code Lifespan | `600` s (Keycloak default, set explicitly) | Realm settings → Tokens    |
+| Registration         | disabled (default)                         | Realm settings → Login     |
+| Login with email     | allowed                                    | Realm settings → Login     |
 
 Note on "enable the device grant at the realm level": Keycloak has no
 realm-wide on/off switch for the OAuth 2.0 Device Authorization Grant — it is
@@ -92,25 +92,25 @@ authorization response; there is no separate realm setting for it.
 
 ### Client `genoffice-desktop`
 
-| Setting | Value | Where in the admin console |
-| --- | --- | --- |
-| Client ID | `genoffice-desktop` | Create client |
-| Name / description | `GenOffice Desktop` / device-grant-only note | Client → Settings |
-| Client type | OpenID Connect | Client → Settings |
-| Enabled | on (default, set explicitly) | Client → Settings |
-| Authentication flow | Public (no client secret, no PKCE secret handling) — `publicClient: true` | Client → Settings |
-| Bearer-only | off (default, set explicitly) — the client requests tokens rather than validating them | Client → Settings |
-| Standard flow | **off** | Client → Settings → Capability config |
-| Direct access grants | **off** | Client → Settings → Capability config |
-| Implicit flow | off (default, explicit) | Client → Settings → Capability config |
-| Service accounts | off (default, explicit) | Client → Settings → Capability config |
-| OAuth 2.0 Device Authorization Grant | **on** — client attribute `oauth2.device.authorization.grant.enabled: "true"` | Client → Settings → Capability config |
-| Valid redirect URIs | **empty** | Client → Settings |
-| Web origins | **empty** | Client → Settings |
+| Setting                              | Value                                                                                  | Where in the admin console            |
+| ------------------------------------ | -------------------------------------------------------------------------------------- | ------------------------------------- |
+| Client ID                            | `genoffice-desktop`                                                                    | Create client                         |
+| Name / description                   | `GenOffice Desktop` / device-grant-only note                                           | Client → Settings                     |
+| Client type                          | OpenID Connect                                                                         | Client → Settings                     |
+| Enabled                              | on (default, set explicitly)                                                           | Client → Settings                     |
+| Authentication flow                  | Public (no client secret, no PKCE secret handling) — `publicClient: true`              | Client → Settings                     |
+| Bearer-only                          | off (default, set explicitly) — the client requests tokens rather than validating them | Client → Settings                     |
+| Standard flow                        | **off**                                                                                | Client → Settings → Capability config |
+| Direct access grants                 | **off**                                                                                | Client → Settings → Capability config |
+| Implicit flow                        | off (default, explicit)                                                                | Client → Settings → Capability config |
+| Service accounts                     | off (default, explicit)                                                                | Client → Settings → Capability config |
+| OAuth 2.0 Device Authorization Grant | **on** — client attribute `oauth2.device.authorization.grant.enabled: "true"`          | Client → Settings → Capability config |
+| Valid redirect URIs                  | **empty**                                                                              | Client → Settings                     |
+| Web origins                          | **empty**                                                                              | Client → Settings                     |
 
 Scopes: the desktop client requests `openid profile email offline_access`.
 `profile` and `email` are realm-default client scopes assigned to every
-client; `offline_access` is an *optional* client scope the client requests
+client; `offline_access` is an _optional_ client scope the client requests
 explicitly — the user then grants it during device-flow approval (Keycloak
 asks "Grant Access to GenOffice Desktop" listing "Offline Access"). Realm
 default roles / default client scopes are otherwise left untouched (Keycloak
@@ -118,13 +118,13 @@ defaults), which is what makes the refresh-token request work.
 
 ### Protocol mapper on `genoffice-desktop`
 
-| Setting | Value |
-| --- | --- |
-| Name | `genoffice-backend-audience` |
-| Type | Audience (protocol mapper `oidc-audience-mapper`) |
-| Included Client Audience | `genoffice-backend` |
-| Add to access token | yes |
-| Add to ID token | no |
+| Setting                  | Value                                             |
+| ------------------------ | ------------------------------------------------- |
+| Name                     | `genoffice-backend-audience`                      |
+| Type                     | Audience (protocol mapper `oidc-audience-mapper`) |
+| Included Client Audience | `genoffice-backend`                               |
+| Add to access token      | yes                                               |
+| Add to ID token          | no                                                |
 
 Why: the access token `aud` would otherwise default to the requesting client
 (`genoffice-desktop`). The backend client `genoffice-backend` does not exist
@@ -133,14 +133,14 @@ the client to exist — and it must validate `aud` from day one.
 
 ### User `testuser`
 
-| Setting | Value |
-| --- | --- |
-| Username | `testuser` |
-| Password | `testpass` — **non-temporary** (`temporary: false`), so dev logins never hit the required "update password" action |
-| Email | `testuser@example.com` (verified) — so the `email` scope returns a claim |
-| Name | Test / User — so the `profile` scope returns claims |
-| Enabled | yes |
-| Realm roles | `default-roles-genoffice` (the realm's default composite → `offline_access`, `uma_authorization`) |
+| Setting     | Value                                                                                                              |
+| ----------- | ------------------------------------------------------------------------------------------------------------------ |
+| Username    | `testuser`                                                                                                         |
+| Password    | `testpass` — **non-temporary** (`temporary: false`), so dev logins never hit the required "update password" action |
+| Email       | `testuser@example.com` (verified) — so the `email` scope returns a claim                                           |
+| Name        | Test / User — so the `profile` scope returns claims                                                                |
+| Enabled     | yes                                                                                                                |
+| Realm roles | `default-roles-genoffice` (the realm's default composite → `offline_access`, `uma_authorization`)                  |
 
 The explicit `realmRoles: ["default-roles-genoffice"]` matters: realm import
 does **not** auto-assign the default role composite to users declared in the

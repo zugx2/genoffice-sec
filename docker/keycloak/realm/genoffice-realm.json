@@ -43,9 +43,7 @@
     {
       "username": "testuser",
       "enabled": true,
-      "realmRoles": [
-        "default-roles-genoffice"
-      ],
+      "realmRoles": ["default-roles-genoffice"],
       "email": "testuser@example.com",
       "emailVerified": true,
       "firstName": "Test",

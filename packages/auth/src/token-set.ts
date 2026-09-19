@@ -10,7 +10,14 @@
  */
 
 import { TokenSetError } from './errors.js'
-import type { Clock, DecodedJwt, IdTokenClaims, IdTokenValidationOptions, JwtExpiryOptions, TokenSet } from './types.js'
+import type {
+  Clock,
+  DecodedJwt,
+  IdTokenClaims,
+  IdTokenValidationOptions,
+  JwtExpiryOptions,
+  TokenSet,
+} from './types.js'
 
 /** Default clock-skew window: 30 s, matching the refresh-at-exp−30s policy */
 const DEFAULT_CLOCK_SKEW_MS = 30_000
@@ -75,7 +82,9 @@ function base64UrlToBytes(segment: string): Uint8Array {
   for (const char of segment) {
     const value = BASE64URL_ALPHABET.indexOf(char)
     if (value === -1) {
-      throw new TokenSetError('JWT segment contains a non-base64url character', { code: 'invalid_jwt' })
+      throw new TokenSetError('JWT segment contains a non-base64url character', {
+        code: 'invalid_jwt',
+      })
     }
     buffer = (buffer << 6) | value
     bits += 6

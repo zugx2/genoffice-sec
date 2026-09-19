@@ -79,7 +79,13 @@ function tokenSuccessJson(overrides: Record<string, unknown> = {}): string {
 
 const tokenSuccess = (): Response => jsonResponse(tokenSuccessJson())
 const refreshSuccess = (): Response =>
-  jsonResponse(tokenSuccessJson({ access_token: 'access-2', refresh_token: 'refresh-2', id_token: ID_TOKEN_2 }))
+  jsonResponse(
+    tokenSuccessJson({
+      access_token: 'access-2',
+      refresh_token: 'refresh-2',
+      id_token: ID_TOKEN_2,
+    }),
+  )
 
 function discoveryJson(overrides: Record<string, unknown> = {}): string {
   return JSON.stringify({
@@ -178,13 +184,9 @@ function makeWorld(options: WorldOptions = {}) {
     jsonResponse(discoveryJson(options.discoveryOverrides)),
   )
   const device = vi.fn(
-    options.device ??
-      (async (_url: string, _init?: RequestInit) => jsonResponse(deviceAuthJson())),
+    options.device ?? (async (_url: string, _init?: RequestInit) => jsonResponse(deviceAuthJson())),
   )
-  const token = vi.fn(
-    options.token ??
-      queueResponses(...(options.tokenScript ?? [])),
-  )
+  const token = vi.fn(options.token ?? queueResponses(...(options.tokenScript ?? [])))
   const revocation = vi.fn(
     async (_url: string, _init?: RequestInit) =>
       options.revocation ?? new Response(null, { status: 204 }),
@@ -249,7 +251,9 @@ describe('AuthOrchestrator.startLogin happy path', () => {
     expect(w.device.mock.calls[0][0]).toBe(DEVICE_ENDPOINT)
     const deviceInit = w.device.mock.calls[0][1]
     expect(deviceInit?.method).toBe('POST')
-    expect(new Headers(deviceInit?.headers).get('content-type')).toBe('application/x-www-form-urlencoded')
+    expect(new Headers(deviceInit?.headers).get('content-type')).toBe(
+      'application/x-www-form-urlencoded',
+    )
     expect(bodyOf(w.device.mock.calls[0]).get('client_id')).toBe(CLIENT_ID)
     expect(bodyOf(w.device.mock.calls[0]).get('scope')).toBe(DEFAULT_SCOPE)
 
@@ -412,7 +416,9 @@ describe('AuthOrchestrator.cancelLogin', () => {
 describe('AuthOrchestrator.refresh', () => {
   it('refreshes via the refresh_token grant and rotates the stored credentials', async () => {
     const w = makeWorld({ tokenScript: [pending(), tokenSuccess(), refreshSuccess()] })
-    await (await w.orchestrator.startLogin()).tokens
+    await (
+      await w.orchestrator.startLogin()
+    ).tokens
 
     const session = await w.orchestrator.refresh()
 
@@ -446,10 +452,15 @@ describe('AuthOrchestrator.refresh', () => {
       tokenScript: [
         pending(),
         tokenSuccess(),
-        jsonResponse(JSON.stringify({ error: 'invalid_grant', error_description: 'Token is not active' }), 400),
+        jsonResponse(
+          JSON.stringify({ error: 'invalid_grant', error_description: 'Token is not active' }),
+          400,
+        ),
       ],
     })
-    await (await w.orchestrator.startLogin()).tokens
+    await (
+      await w.orchestrator.startLogin()
+    ).tokens
 
     const err = await rejectionOf(w.orchestrator.refresh())
 
@@ -476,7 +487,9 @@ describe('AuthOrchestrator.refresh', () => {
 
   it('is single-flight: concurrent calls share one token request', async () => {
     const w = makeWorld({ tokenScript: [pending(), tokenSuccess(), refreshSuccess()] })
-    await (await w.orchestrator.startLogin()).tokens
+    await (
+      await w.orchestrator.startLogin()
+    ).tokens
 
     const first = w.orchestrator.refresh()
     const second = w.orchestrator.refresh()
@@ -496,7 +509,9 @@ describe('AuthOrchestrator.refresh', () => {
 describe('AuthOrchestrator.logout', () => {
   it('revokes the refresh token, wipes the store, and returns the end-session URL', async () => {
     const w = makeWorld({ tokenScript: [pending(), tokenSuccess()] })
-    await (await w.orchestrator.startLogin()).tokens
+    await (
+      await w.orchestrator.startLogin()
+    ).tokens
 
     const result = await w.orchestrator.logout()
 
@@ -505,7 +520,9 @@ describe('AuthOrchestrator.logout', () => {
     expect(w.revocation.mock.calls[0][0]).toBe(REVOKE_ENDPOINT)
     const revokeInit = w.revocation.mock.calls[0][1]
     expect(revokeInit?.method).toBe('POST')
-    expect(new Headers(revokeInit?.headers).get('content-type')).toBe('application/x-www-form-urlencoded')
+    expect(new Headers(revokeInit?.headers).get('content-type')).toBe(
+      'application/x-www-form-urlencoded',
+    )
     const revokeBody = bodyOf(w.revocation.mock.calls[0])
     expect(revokeBody.get('token')).toBe('refresh-1')
     expect(revokeBody.get('token_type_hint')).toBe('refresh_token')
@@ -516,7 +533,9 @@ describe('AuthOrchestrator.logout', () => {
     expect(w.store.current()).toBeNull()
 
     // End-session URL constructed with the id_token_hint, nothing opened here
-    expect(result.endSessionUrl).toBe(`${END_SESSION_ENDPOINT}?id_token_hint=${encodeURIComponent(ID_TOKEN_1)}`)
+    expect(result.endSessionUrl).toBe(
+      `${END_SESSION_ENDPOINT}?id_token_hint=${encodeURIComponent(ID_TOKEN_1)}`,
+    )
 
     // Memory wiped too: nothing left to refresh with
     const err = await rejectionOf(w.orchestrator.refresh())
@@ -528,14 +547,18 @@ describe('AuthOrchestrator.logout', () => {
       tokenScript: [pending(), tokenSuccess()],
       revocation: jsonResponse(JSON.stringify({ error: 'server_error' }), 500),
     })
-    await (await w.orchestrator.startLogin()).tokens
+    await (
+      await w.orchestrator.startLogin()
+    ).tokens
 
     const result = await w.orchestrator.logout()
 
     expect(w.revocation).toHaveBeenCalledTimes(1)
     expect(w.store.clear).toHaveBeenCalledTimes(1)
     expect(w.store.current()).toBeNull()
-    expect(result.endSessionUrl).toBe(`${END_SESSION_ENDPOINT}?id_token_hint=${encodeURIComponent(ID_TOKEN_1)}`)
+    expect(result.endSessionUrl).toBe(
+      `${END_SESSION_ENDPOINT}?id_token_hint=${encodeURIComponent(ID_TOKEN_1)}`,
+    )
   })
 
   it('revokes the stored refresh token after a restart (no in-memory session)', async () => {
@@ -544,7 +567,9 @@ describe('AuthOrchestrator.logout', () => {
     const result = await w.orchestrator.logout()
 
     expect(bodyOf(w.revocation.mock.calls[0]).get('token')).toBe('refresh-stored')
-    expect(result.endSessionUrl).toBe(`${END_SESSION_ENDPOINT}?id_token_hint=${encodeURIComponent(ID_TOKEN_1)}`)
+    expect(result.endSessionUrl).toBe(
+      `${END_SESSION_ENDPOINT}?id_token_hint=${encodeURIComponent(ID_TOKEN_1)}`,
+    )
     expect(w.store.clear).toHaveBeenCalledTimes(1)
   })
 

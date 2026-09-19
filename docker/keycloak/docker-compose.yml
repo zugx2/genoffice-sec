@@ -8,7 +8,7 @@ services:
   keycloak:
     image: quay.io/keycloak/keycloak:26.2
     container_name: genoffice-keycloak
-    command: ["start-dev", "--import-realm"]
+    command: ['start-dev', '--import-realm']
     environment:
       # Dev-only bootstrap admin for the master realm (local debugging of the
       # imported realm). Never use credentials like this outside local dev.
@@ -21,7 +21,7 @@ services:
     ports:
       # Dev config anchor (Phase 2 depends on this): Keycloak MUST be
       # reachable on host port 8080.
-      - "8080:8080"
+      - '8080:8080'
     volumes:
       # Realm import (declarative; skipped automatically if the realm exists).
       - ./realm:/opt/keycloak/data/import:ro

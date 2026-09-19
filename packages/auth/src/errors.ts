@@ -11,11 +11,7 @@ export type DiscoveryErrorCode = 'http_error' | 'network_error' | 'invalid_docum
 export type DeviceAuthErrorCode = 'http_error' | 'network_error' | 'invalid_response'
 
 export type TokenSetErrorCode =
-  | 'invalid_response'
-  | 'invalid_jwt'
-  | 'iss_mismatch'
-  | 'aud_mismatch'
-  | 'missing_sub'
+  'invalid_response' | 'invalid_jwt' | 'iss_mismatch' | 'aud_mismatch' | 'missing_sub'
 
 export type TokenPollErrorCode =
   | 'access_denied'

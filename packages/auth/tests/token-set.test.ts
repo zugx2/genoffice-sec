@@ -20,7 +20,10 @@ function encodeSegment(value: unknown): string {
 }
 
 /** Unsigned-for-test-purposes JWT: real base64url header/payload, opaque signature */
-function jwt(payload: Record<string, unknown>, header: Record<string, unknown> = { alg: 'RS256', typ: 'JWT' }): string {
+function jwt(
+  payload: Record<string, unknown>,
+  header: Record<string, unknown> = { alg: 'RS256', typ: 'JWT' },
+): string {
   return `${encodeSegment(header)}.${encodeSegment(payload)}.signature-not-verified`
 }
 
@@ -58,7 +61,12 @@ describe('parseTokenResponse', () => {
 
   it('leaves optional tokens undefined when the server omits them', () => {
     const set = parseTokenResponse(
-      tokenResponseJson({ refresh_token: undefined, id_token: undefined, scope: undefined, expires_in: undefined }),
+      tokenResponseJson({
+        refresh_token: undefined,
+        id_token: undefined,
+        scope: undefined,
+        expires_in: undefined,
+      }),
     )
 
     expect(set.refreshToken).toBeUndefined()
@@ -68,7 +76,9 @@ describe('parseTokenResponse', () => {
   })
 
   it('throws TokenSetError (invalid_response) when access_token is missing', () => {
-    expect(() => parseTokenResponse(tokenResponseJson({ access_token: undefined }))).toThrow(TokenSetError)
+    expect(() => parseTokenResponse(tokenResponseJson({ access_token: undefined }))).toThrow(
+      TokenSetError,
+    )
     expect(() => parseTokenResponse(tokenResponseJson({ access_token: '' }))).toThrow(TokenSetError)
     expect(() => parseTokenResponse(tokenResponseJson({ access_token: undefined }))).toThrow(
       expect.objectContaining({ code: 'invalid_response' }),
@@ -78,7 +88,9 @@ describe('parseTokenResponse', () => {
   it('throws TokenSetError (invalid_response) on non-JSON or non-object payloads', () => {
     expect(() => parseTokenResponse('not json')).toThrow(TokenSetError)
     expect(() => parseTokenResponse('["array"]')).toThrow(TokenSetError)
-    expect(() => parseTokenResponse('42')).toThrow(expect.objectContaining({ code: 'invalid_response' }))
+    expect(() => parseTokenResponse('42')).toThrow(
+      expect.objectContaining({ code: 'invalid_response' }),
+    )
   })
 })
 
@@ -203,9 +215,15 @@ describe('validateIdToken claim checks', () => {
   })
 
   it('throws TokenSetError (iss_mismatch) when iss does not equal the configured issuer', () => {
-    const token = jwt({ iss: 'http://evil.example.test/realms/other', aud: CLIENT_ID, sub: 'user-1' })
+    const token = jwt({
+      iss: 'http://evil.example.test/realms/other',
+      aud: CLIENT_ID,
+      sub: 'user-1',
+    })
 
-    expect(() => validateIdToken(token, { issuer: ISSUER, audience: CLIENT_ID })).toThrow(TokenSetError)
+    expect(() => validateIdToken(token, { issuer: ISSUER, audience: CLIENT_ID })).toThrow(
+      TokenSetError,
+    )
     expect(() => validateIdToken(token, { issuer: ISSUER, audience: CLIENT_ID })).toThrow(
       expect.objectContaining({ code: 'iss_mismatch' }),
     )
@@ -222,7 +240,9 @@ describe('validateIdToken claim checks', () => {
   it('throws TokenSetError (aud_mismatch) on an array-form aud without the configured audience', () => {
     const token = jwt({ iss: ISSUER, aud: ['account', 'other-client'], sub: 'user-1' })
 
-    expect(() => validateIdToken(token, { issuer: ISSUER, audience: CLIENT_ID })).toThrow(TokenSetError)
+    expect(() => validateIdToken(token, { issuer: ISSUER, audience: CLIENT_ID })).toThrow(
+      TokenSetError,
+    )
     expect(() => validateIdToken(token, { issuer: ISSUER, audience: CLIENT_ID })).toThrow(
       expect.objectContaining({ code: 'aud_mismatch' }),
     )
@@ -237,11 +257,17 @@ describe('validateIdToken claim checks', () => {
   })
 
   it('throws TokenSetError (missing_sub) when sub is absent or empty', () => {
-    expect(() => validateIdToken(jwt({ iss: ISSUER, aud: CLIENT_ID }), { issuer: ISSUER, audience: CLIENT_ID })).toThrow(
-      expect.objectContaining({ code: 'missing_sub' }),
-    )
     expect(() =>
-      validateIdToken(jwt({ iss: ISSUER, aud: CLIENT_ID, sub: '' }), { issuer: ISSUER, audience: CLIENT_ID }),
+      validateIdToken(jwt({ iss: ISSUER, aud: CLIENT_ID }), {
+        issuer: ISSUER,
+        audience: CLIENT_ID,
+      }),
+    ).toThrow(expect.objectContaining({ code: 'missing_sub' }))
+    expect(() =>
+      validateIdToken(jwt({ iss: ISSUER, aud: CLIENT_ID, sub: '' }), {
+        issuer: ISSUER,
+        audience: CLIENT_ID,
+      }),
     ).toThrow(expect.objectContaining({ code: 'missing_sub' }))
   })
 })

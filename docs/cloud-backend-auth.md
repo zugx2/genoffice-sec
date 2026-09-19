@@ -154,12 +154,12 @@ renderer surface below are flow-agnostic.
 
 ### Token handling rules
 
-| Token        | Lifetime (Keycloak default) | Storage                              | Who sees it            |
-| ------------ | --------------------------- | ------------------------------------ | ---------------------- |
-| access (JWT) | ~5 min                      | main-process memory only             | nobody (attached as `Authorization: Bearer` by the backend client) |
-| refresh      | configurable, request `offline_access` | `safeStorage`-encrypted file in userData, `0600`-style discipline | nobody |
-| id (JWT)     | ~5 min                      | memory; `id_token_hint` for logout   | nobody; decoded profile only |
-| device_code  | minutes (realm "Device Code Lifespan") | main-process memory only, **never logged, never persisted** — it is redeemable for tokens once approved | nobody |
+| Token        | Lifetime (Keycloak default)            | Storage                                                                                                 | Who sees it                                                        |
+| ------------ | -------------------------------------- | ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| access (JWT) | ~5 min                                 | main-process memory only                                                                                | nobody (attached as `Authorization: Bearer` by the backend client) |
+| refresh      | configurable, request `offline_access` | `safeStorage`-encrypted file in userData, `0600`-style discipline                                       | nobody                                                             |
+| id (JWT)     | ~5 min                                 | memory; `id_token_hint` for logout                                                                      | nobody; decoded profile only                                       |
+| device_code  | minutes (realm "Device Code Lifespan") | main-process memory only, **never logged, never persisted** — it is redeemable for tokens once approved | nobody                                                             |
 
 - Renderer receives only `{ status, profile }` (name, email, roles, `sub`) —
   never any token, never any endpoint URL it could misuse.
@@ -210,11 +210,11 @@ renderer surface below are flow-agnostic.
 A per-user setting, `storageMode`, selects where document files
 (docx/xlsx/pptx/pdf/md/html) live:
 
-| Mode | Local disk | Server | Availability |
-| --- | --- | --- | --- |
-| `local` (default) | authoritative | not used for documents | everyone; today's behavior unchanged |
-| `remote` | ephemeral scratch only, wiped after use | authoritative — the only persistent copy | requires an active session |
-| `hybrid` | authoritative on save | mirrored copy + version history | requires an active session |
+| Mode              | Local disk                              | Server                                   | Availability                         |
+| ----------------- | --------------------------------------- | ---------------------------------------- | ------------------------------------ |
+| `local` (default) | authoritative                           | not used for documents                   | everyone; today's behavior unchanged |
+| `remote`          | ephemeral scratch only, wiped after use | authoritative — the only persistent copy | requires an active session           |
+| `hybrid`          | authoritative on save                   | mirrored copy + version history          | requires an active session           |
 
 Rules:
 
