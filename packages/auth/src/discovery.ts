@@ -2,9 +2,10 @@
  * OIDC discovery client.
  *
  * Fetches `<issuer>/.well-known/openid-configuration`, validates the
- * endpoint fields the suite relies on, and caches the parsed document with
- * a TTL — a fresh `get()` re-fetches on expiry. The HTTP transport and the
- * clock are injectable so tests mock by injection, never over the network.
+ * endpoint fields the suite relies on, checks the returned `issuer` against
+ * the configured one (OIDC Discovery §4.3), and caches the parsed document
+ * with a TTL — a fresh `get()` re-fetches on expiry. The HTTP transport and
+ * the clock are injectable so tests mock by injection, never over the network.
  */
 
 import { DiscoveryError } from './errors.js'
@@ -18,9 +19,13 @@ interface CacheEntry {
   fetchedAt: number
 }
 
-/** Strip trailing slashes so the issuer always composes into one well-known URL */
+/** Strip trailing slashes so two issuers differing only in them compare equal */
+function stripTrailingSlashes(issuer: string): string {
+  return issuer.replace(/\/+$/, '')
+}
+
 function wellKnownUrl(issuer: string): string {
-  return `${issuer.replace(/\/+$/, '')}/.well-known/openid-configuration`
+  return `${stripTrailingSlashes(issuer)}/.well-known/openid-configuration`
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -122,6 +127,14 @@ export class DiscoveryClient {
     }
 
     const document = parseDiscoveryDocument(await response.text())
+    // OIDC Discovery §4.3: the returned issuer must be the configured one,
+    // or every downstream `iss` check would trust the document it verifies.
+    if (stripTrailingSlashes(document.issuer) !== stripTrailingSlashes(this.issuer)) {
+      throw new DiscoveryError(
+        `Discovery document issuer "${document.issuer}" does not match the configured issuer "${this.issuer}"`,
+        { code: 'invalid_document' },
+      )
+    }
     this.cache = { document, fetchedAt: this.now() }
     return document
   }

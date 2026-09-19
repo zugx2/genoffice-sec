@@ -115,6 +115,31 @@ describe('DiscoveryClient failures', () => {
     expect((err as DiscoveryError).message).toContain('issuer')
   })
 
+  it('throws DiscoveryError (invalid_document) when the document issuer differs from the configured one', async () => {
+    const client = new DiscoveryClient({
+      issuer: ISSUER,
+      fetchFn: async () =>
+        jsonResponse(discoveryJson({ issuer: 'http://attacker.example.com/realms/genoffice' })),
+    })
+
+    const err = await client.get().catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(DiscoveryError)
+    expect((err as DiscoveryError).code).toBe('invalid_document')
+    expect((err as DiscoveryError).message).toContain('issuer')
+    // The mismatch must not be cached
+    expect(client.getCached()).toBeUndefined()
+  })
+
+  it('accepts a document issuer that differs only by trailing slashes', async () => {
+    const client = new DiscoveryClient({
+      issuer: `${ISSUER}/`,
+      fetchFn: async () => jsonResponse(discoveryJson()),
+    })
+
+    const doc = await client.get()
+    expect(doc.issuer).toBe(ISSUER)
+  })
+
   it('throws DiscoveryError (http_error, status) on non-2xx responses', async () => {
     const client = new DiscoveryClient({
       issuer: ISSUER,
@@ -149,7 +174,7 @@ describe('DiscoveryClient failures', () => {
       now: clock.now,
       fetchFn: async () => {
         if (fail) throw new Error('offline')
-        return jsonResponse(discoveryJson({ issuer: `${ISSUER}-v${++n}` }))
+        return jsonResponse(discoveryJson({ token_endpoint: `${ISSUER}/token-v${++n}` }))
       },
     })
 
@@ -160,7 +185,7 @@ describe('DiscoveryClient failures', () => {
 
     fail = false
     const recovered = await client.get()
-    expect(recovered.issuer).toBe(`${ISSUER}-v2`)
+    expect(recovered.tokenEndpoint).toBe(`${ISSUER}/token-v2`)
   })
 })
 
@@ -172,7 +197,9 @@ describe('DiscoveryClient TTL expiry', () => {
   it('re-fetches once the TTL has elapsed; getCached() reports expiry', async () => {
     const clock = fakeClock()
     let n = 0
-    const fetchFn = mockFetch(() => jsonResponse(discoveryJson({ issuer: `${ISSUER}-v${++n}` })))
+    const fetchFn = mockFetch(() =>
+      jsonResponse(discoveryJson({ token_endpoint: `${ISSUER}/token-v${++n}` })),
+    )
     const client = new DiscoveryClient({ issuer: ISSUER, fetchFn, now: clock.now, ttlMs: 60_000 })
 
     const first = await client.get()
@@ -189,7 +216,7 @@ describe('DiscoveryClient TTL expiry', () => {
     const second = await client.get()
     expect(fetchFn).toHaveBeenCalledTimes(2)
     expect(second).not.toBe(first)
-    expect(second.issuer).toBe(`${ISSUER}-v2`)
+    expect(second.tokenEndpoint).toBe(`${ISSUER}/token-v2`)
   })
 
   it('default TTL is 5 minutes', async () => {

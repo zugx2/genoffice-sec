@@ -97,7 +97,9 @@ authorization response; there is no separate realm setting for it.
 | Client ID | `genoffice-desktop` | Create client |
 | Name / description | `GenOffice Desktop` / device-grant-only note | Client → Settings |
 | Client type | OpenID Connect | Client → Settings |
+| Enabled | on (default, set explicitly) | Client → Settings |
 | Authentication flow | Public (no client secret, no PKCE secret handling) — `publicClient: true` | Client → Settings |
+| Bearer-only | off (default, set explicitly) — the client requests tokens rather than validating them | Client → Settings |
 | Standard flow | **off** | Client → Settings → Capability config |
 | Direct access grants | **off** | Client → Settings → Capability config |
 | Implicit flow | off (default, explicit) | Client → Settings → Capability config |

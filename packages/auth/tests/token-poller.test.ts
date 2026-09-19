@@ -243,7 +243,6 @@ describe('startDeviceTokenPoll terminal errors', () => {
 describe('startDeviceTokenPoll cancellation', () => {
   it('cancel() rejects the promise promptly (even mid-sleep) and stops polling', async () => {
     const fetchFn = queueResponses(pending(), pending())
-    const clock = fakeClock()
     const gates: Array<() => void> = []
     const sleep = vi.fn((_ms: number) => new Promise<void>((resolve) => gates.push(resolve)))
 
