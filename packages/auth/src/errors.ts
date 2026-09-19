@@ -10,6 +10,22 @@ export type DiscoveryErrorCode = 'http_error' | 'network_error' | 'invalid_docum
 
 export type DeviceAuthErrorCode = 'http_error' | 'network_error' | 'invalid_response'
 
+export type TokenSetErrorCode =
+  | 'invalid_response'
+  | 'invalid_jwt'
+  | 'iss_mismatch'
+  | 'aud_mismatch'
+  | 'missing_sub'
+
+export type TokenPollErrorCode =
+  | 'access_denied'
+  | 'expired_token'
+  | 'poll_expired'
+  | 'cancelled'
+  | 'http_error'
+  | 'network_error'
+  | 'invalid_response'
+
 export interface AuthErrorOptions<C extends string> {
   code: C
   /** HTTP status when the server answered */
@@ -33,3 +49,7 @@ export class AuthError<C extends string = string> extends Error {
 export class DiscoveryError extends AuthError<DiscoveryErrorCode> {}
 
 export class DeviceAuthError extends AuthError<DeviceAuthErrorCode> {}
+
+export class TokenSetError extends AuthError<TokenSetErrorCode> {}
+
+export class TokenPollError extends AuthError<TokenPollErrorCode> {}
