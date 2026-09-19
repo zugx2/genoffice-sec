@@ -5,7 +5,8 @@ defaults; tasks below can start against the defaults and be adjusted when a
 decision is flipped).
 
 Date: 2026-09-19 (flow decision updated 2026-09-19: device grant chosen
-over authorization-code + PKCE loopback — see "Alternative considered")
+over authorization-code + PKCE loopback — see "Alternative considered";
+document storage modes decided 2026-09-19 — see "Document storage modes")
 Scope: user authentication via OIDC / Keycloak, an authenticated cloud
 backend service, and the client integration to reach it from the Electron
 shell.
@@ -17,6 +18,9 @@ shell.
   main process (matches the existing CSP posture — renderers are locked to
   `'self'` and cannot call external origins).
 - Tokens persist encrypted so a session survives app restarts.
+- Documents support three user-selectable storage modes — local-only
+  (default, unchanged behavior), remote-only (files exist only on the
+  server), and hybrid (local file + mirrored server copy).
 - No redirect URIs (including `http://127.0.0.1:*` loopback) registered in
   Keycloak, so deployments whose security baselines forbid http/loopback
   redirects work as-is.
@@ -28,7 +32,8 @@ shell.
 
 - Replacing the Genspark device-code login used for AI providers (see
   decision point 1).
-- Making the cloud the source of truth for documents (decision point 2).
+- Background two-way folder sync (Dropbox-style daemon). Hybrid mode is
+  upload-on-save mirroring plus open-from-cloud, not continuous sync.
 - Multi-account / multi-realm switching in one running instance.
 
 ## Current architecture facts (anchors for implementers)
@@ -200,6 +205,56 @@ renderer surface below are flow-agnostic.
 - Endpoints grow phase by phase: `GET /whoami` → projects/chats CRUD →
   document storage.
 
+## Document storage modes
+
+A per-user setting, `storageMode`, selects where document files
+(docx/xlsx/pptx/pdf/md/html) live:
+
+| Mode | Local disk | Server | Availability |
+| --- | --- | --- | --- |
+| `local` (default) | authoritative | not used for documents | everyone; today's behavior unchanged |
+| `remote` | ephemeral scratch only, wiped after use | authoritative — the only persistent copy | requires an active session |
+| `hybrid` | authoritative on save | mirrored copy + version history | requires an active session |
+
+Rules:
+
+- `local` is the default and the only mode available without a session.
+- `remote` requires an active session. Open = download into memory; save =
+  upload. No persistent local copy is kept. Honest caveat: some engines,
+  sidecars, and PDF paths still need real files to process, so ephemeral
+  scratch files in a temp dir are unavoidable — they are deleted after
+  use, and crash-recovery autosave targets the server (an ephemeral local
+  buffer may hold unsaved work and is wiped on clean exit).
+- `hybrid` keeps the local file as the working copy and mirrors every save
+  to the server (upload-on-save); opening a cloud document downloads it to
+  a local file. The server keeps version history; conflicts are detected
+  on upload via version/ETag checks and resolved as conflict copies — no
+  background sync daemon.
+- Switching modes offers migration: local → hybrid/remote = bulk upload;
+  remote → local/hybrid = bulk download.
+
+What changes under `remote`/`hybrid` (the deep work — today's surfaces are
+path-coupled):
+
+- **Identity**: tabs, recents (`recent.json`), starred, and the home
+  folder tree are keyed by absolute path today (including `realpathSync`
+  dedupe in the tab manager). Remote documents get a server-assigned
+  cloud document ID; recents/starred move to server-side metadata keyed
+  by ID; the home tree gains a cloud view (virtual folders from server
+  metadata) alongside the filesystem one.
+- **Save/open routing**: per-editor handlers route through a
+  `DocumentStore` abstraction (local / remote / hybrid adapters) instead
+  of direct fs calls. Pilot in docs, then roll out to the other editors.
+- **External-change detection** (local file watchers) is replaced in
+  remote mode by server version checks on refresh.
+- **Guards**: path-based write allowlists (`authorizeMcpDocWrite`,
+  `docs:save-to`) gain ID-based equivalents.
+
+Backend surface (Phase 7): per-`sub` isolated document endpoints —
+`GET/POST /documents` (list/create), `GET/PUT/DELETE /documents/:id`
+(download / version-checked update / delete),
+`GET /documents/:id/versions`; multipart uploads for large files.
+
 ## Client integration map
 
 ### A. `packages/auth` (new, Electron-free core)
@@ -270,12 +325,9 @@ no Electron import):
 
 1. Projects/chats: a remote `ProjectApi` implementation beside the local
    one in `packages/project-store`; the shell routes to it when a session
-   is active. Offline behavior falls back to local (decision point 2
-   refines this).
-2. Documents: only after the mirror-vs-source-of-truth decision. Today's
-   surfaces are path-coupled (`recent.json`, `starred.json`, home
-   folder-tree with `realpathSync` dedupe, external-change detection), so
-   this is the deepest change in the effort.
+   is active. Offline behavior falls back to local.
+2. Documents: three user-selectable storage modes — see "Document storage
+   modes" — landing in Phase 7 behind a `DocumentStore` abstraction.
 
 ## Security checklist for each task
 
@@ -379,10 +431,26 @@ standalone; later phases build on earlier ones.
 - [ ] Shell routing: remote when session active, local fallback offline;
       conflict/merge policy documented and tested.
 
-### Phase 7 — documents (blocked on decision point 2)
+### Phase 7 — document storage modes
 
-- [ ] Design note: mirror vs source of truth for document files.
-- [ ] Implementation tasks derived from that note.
+- [ ] Backend: document endpoints (list/create/download/version-checked
+      update/delete + versions), per-`sub` isolation, multipart upload +
+      integration tests.
+- [ ] `DocumentStore` abstraction package + local adapter extracted from
+      the per-editor save/open handlers (pilot: docs).
+- [ ] Remote adapter: download-to-memory / upload-on-save, ephemeral
+      scratch cleanup after use.
+- [ ] Cloud document IDs: tab identity, server-side recents/starred,
+      home cloud folder view.
+- [ ] `storageMode` setting (`app-settings.json`) + Settings UI + guards
+      (remote requires a session) + mode-switch migration (bulk
+      upload/download).
+- [ ] Per-mode autosave & crash recovery (remote: server autosave +
+      ephemeral buffer wiped on clean exit).
+- [ ] Hybrid conflict policy (version/ETag check → conflict copies) +
+      tests.
+- [ ] Roll `DocumentStore` out to sheets/slides/pdf/markdown/html.
+- [ ] i18n strings + `SECURITY.md` update for the new network surface.
 
 ## Open decision points
 
@@ -393,9 +461,11 @@ listed under the affected phase.
    Keycloak is the user identity for the cloud backend; the Genspark
    device login stays the AI-provider credential. `home:cloud-projects`
    keeps meaning Genspark projects until a later unification.
-2. **Cloud as source of truth vs sync/mirror for user data.** Default for
-   projects/chats (Phase 6): cloud is the source of truth when online,
-   local fallback offline. Documents (Phase 7) undecided — blocked task.
+2. **Document storage (resolved 2026-09-19).** Three user-selectable
+   modes — `local` (default), `remote` (server-only), `hybrid` (local +
+   mirrored) — per the "Document storage modes" section. Default to
+   confirm during Phase 7: hybrid is upload-on-save mirroring with
+   version/ETag conflict copies, not a background sync daemon.
 3. **Backend code location & license.** Default: `services/backend`,
    Apache-2.0, in-repo. Alternative: `ee/` with its separate license if
    this ships as an enterprise/private-deployment feature.
