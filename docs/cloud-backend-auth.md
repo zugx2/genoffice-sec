@@ -4,7 +4,8 @@ Status: draft design (decision points in the last section carry recommended
 defaults; tasks below can start against the defaults and be adjusted when a
 decision is flipped).
 
-Date: 2026-09-19
+Date: 2026-09-19 (flow decision updated 2026-09-19: device grant chosen
+over authorization-code + PKCE loopback — see "Alternative considered")
 Scope: user authentication via OIDC / Keycloak, an authenticated cloud
 backend service, and the client integration to reach it from the Electron
 shell.
@@ -16,6 +17,9 @@ shell.
   main process (matches the existing CSP posture — renderers are locked to
   `'self'` and cannot call external origins).
 - Tokens persist encrypted so a session survives app restarts.
+- No redirect URIs (including `http://127.0.0.1:*` loopback) registered in
+  Keycloak, so deployments whose security baselines forbid http/loopback
+  redirects work as-is.
 - A cloud backend service accepts Keycloak-issued JWTs and exposes per-user
   data (profile round-trip first, projects/chats next, documents last).
 - Everything is phased so each phase ships value on its own.
@@ -37,12 +41,14 @@ shell.
   (`apps/shell/src/main/index.ts:4741-4758`), channels named
   `domain:kebab-action`, typed preload APIs via `contextBridge`
   (example: `apps/docs/src/preload/index.ts`).
-- Existing account UX to reuse: device-code login in
-  `packages/ai-search/src/genoffice-auth.ts` (`startGenofficeLogin`,
-  `genofficeLogout`, `0600` credential file) driving the Account pane in
+- Existing account UX **and device-flow precedent** to reuse:
+  `packages/ai-search/src/genoffice-auth.ts` implements a device-code login
+  today (`startGenofficeLogin`, `genofficeLogout`, `0600` credential file)
+  and drives the Account pane in
   `apps/shell/src/renderer/src/SettingsModal.tsx` over
   `home:account-login` / `home:account-login-event`
-  (`apps/shell/src/shared/home-api.ts:377-439`).
+  (`apps/shell/src/shared/home-api.ts:377-439`). Our login UX copies this
+  shape.
 - Storage: documents are plain files under `<Documents>/GenOffice`;
   projects/chats live in `packages/project-store` (deliberately
   Electron-free; renderer-facing `ProjectApi` interface at
@@ -62,46 +68,84 @@ shell.
 
 ## Authentication design
 
-### Flow: Authorization Code + PKCE (S256) with loopback redirect
+### Flow: Device Authorization Grant (RFC 8628)
 
-The desktop app is a public OAuth client (no secret on disk). Standard flow
-per RFC 8252, system browser, loopback redirect:
+The desktop app is a public OAuth client (no secret on disk). Login uses
+the device authorization grant — the same pattern as the in-repo Genspark
+login, and the flow that requires **no redirect URI of any kind**:
 
 ```
 ┌──────────┐         ┌────────────────┐        ┌──────────┐        ┌──────────┐
 │ Renderer │         │ Main process   │        │ System   │        │ Keycloak │
 │ (button) │         │ (auth module)  │        │ browser  │        │          │
 └────┬─────┘         └───────┬────────┘        └────┬─────┘        └────┬─────┘
-     │ auth:login            │                      │                   │
-     │──────────────────────▶│ bind 127.0.0.1:port │                   │
-     │                       │ shell.openExternal   │                   │
-     │                       │─────────────────────▶│ /auth?client_id…  │
-     │                       │                      │ &code_challenge   │
-     │                       │                      │──────────────────▶│
-     │                       │                      │  user logs in     │
-     │                       │                      │◀──────────────────│
-     │                       │◀── GET /callback?code=… (local server) ──│
-     │                       │ POST /token (code + verifier)            │
-     │                       │─────────────────────────────────────────▶│
-     │                       │◀── access_token, refresh_token, id_token │
-     │                       │ encrypt via safeStorage → disk           │
+     │ auth:login            │ POST /auth/device                      │
+     │──────────────────────▶│────────────────────────────────────────▶│
+     │                       │◀─ device_code, user_code,               │
+     │                       │   verification_uri(_complete), interval │
+     │◀── login-event ────────│                                         │
+     │  (show user code)     │ shell.openExternal(verification_uri_complete)
+     │                       │──────────────────────▶│ user confirms   │
+     │                       │                       │ the code shown  │
+     │                       │                       │────────────────▶│
+     │                       │ POST /token (grant_type=…device_code,    │
+     │                       │           poll every `interval` seconds)│
+     │                       │────────────────────────────────────────▶│
+     │                       │   … authorization_pending …             │
+     │                       │◀─ access_token, refresh_token, id_token │
+     │                       │ encrypt via safeStorage → disk          │
      │◀── session changed ────│                                         │
 ```
 
+Step by step:
+
+1. Main process POSTs `client_id` + scope to the discovery-provided
+   `device_authorization_endpoint`.
+2. Keycloak returns `device_code`, `user_code`,
+   `verification_uri` / `verification_uri_complete` (pre-fills the code),
+   `expires_in`, `interval`.
+3. The renderer shows the `user_code`; the main process opens
+   `verification_uri_complete` in the system browser (after checking its
+   origin matches the configured issuer).
+4. The user authenticates and confirms the code matches what the app is
+   displaying (this comparison is the flow's phishing defense).
+5. The main process polls the token endpoint with
+   `grant_type=urn:ietf:params:oauth:grant-type:device_code` every
+   `interval` seconds, treating `authorization_pending` as keep-going,
+   `slow_down` as "increase interval", and `access_denied` /
+   `expired_token` as terminal.
+6. On success: tokens as below; the browser tab can be closed; no callback
+   of any kind ever reaches the app.
+
 Why this flow:
 
-- The token exchange happens in Node (server-to-server), so Keycloak CORS
-  configuration is irrelevant for the client — one classic stumbling block
-  avoided.
-- The system browser reuses the user's existing Keycloak SSO session, so the
-  second login is one confirmation; it is also more phishing-resistant than
-  a captive `BrowserWindow` (users can verify the real Keycloak URL).
-- Loopback redirect gives an automatic return to the app — no code typing.
+- **No redirect URIs at all.** Nothing registered on the Keycloak client,
+  so deployment security baselines that forbid `http://` and loopback
+  redirects are satisfied without an audit argument.
+- **No local HTTP listener during login.** The app only makes outbound
+  requests; the attack surface is smaller even than a one-shot loopback
+  server.
+- **System browser authentication**: reuses the user's existing Keycloak
+  SSO session, and the user can verify they are on the real Keycloak URL
+  before typing anything.
+- **Works when the browser is not on the same machine** as the app (SSH,
+  RDP, remote dev boxes) — redirect-based flows cannot do this at all.
+- **In-repo precedent**: `packages/ai-search/src/genoffice-auth.ts` ships a
+  working device flow; the UX and progress-event plumbing are proven.
+- **Accepted trade-off**: one extra confirmation step and a few seconds of
+  polling versus an instant redirect. Chosen deliberately for policy
+  compatibility.
 
-Fallback (deferred, not planned): the device authorization grant. Keycloak
-supports it per realm + client, it needs no redirect URI or local server,
-and `genoffice-auth.ts` is an in-repo precedent. Choose it only if the
-loopback flow causes trouble in some locked-down environment.
+Alternative considered (rejected for now): Authorization Code + PKCE
+(RFC 7636) with a loopback redirect (RFC 8252, `http://127.0.0.1:*`). It is
+the standard native-app flow with instant return, and it is safe under
+PKCE — the authorization code is unredeemable without the in-process
+verifier, which is why major IdPs (Entra, Google, etc.) run it for CLIs.
+It was rejected because it requires registering a loopback http redirect
+URI on the client, and the target deployments' policies disallow exactly
+that. If a deployment ever wants it, add it behind an `authFlow:
+'device' | 'pkce-loopback'` config — the session manager, token store, and
+renderer surface below are flow-agnostic.
 
 ### Token handling rules
 
@@ -110,9 +154,12 @@ loopback flow causes trouble in some locked-down environment.
 | access (JWT) | ~5 min                      | main-process memory only             | nobody (attached as `Authorization: Bearer` by the backend client) |
 | refresh      | configurable, request `offline_access` | `safeStorage`-encrypted file in userData, `0600`-style discipline | nobody |
 | id (JWT)     | ~5 min                      | memory; `id_token_hint` for logout   | nobody; decoded profile only |
+| device_code  | minutes (realm "Device Code Lifespan") | main-process memory only, **never logged, never persisted** — it is redeemable for tokens once approved | nobody |
 
 - Renderer receives only `{ status, profile }` (name, email, roles, `sub`) —
   never any token, never any endpoint URL it could misuse.
+- ID-token checks: `iss`, `aud`, `sub` (device grant carries no PKCE
+  verifier or nonce; the user-code confirmation is the binding step).
 - Proactive refresh timer at `exp − 30s` plus reactive refresh-once-on-401
   in the backend client.
 - `safeStorage` requires a desktop keyring (libsecret on Linux). On WSL2 or
@@ -122,11 +169,12 @@ loopback flow causes trouble in some locked-down environment.
 
 ### Keycloak client configuration
 
-- Realm `genoffice`, public client `genoffice-desktop`, **Standard flow +
-  PKCE (S256)**; Direct access grants off.
-- Valid redirect URIs: `http://127.0.0.1:*` (loopback wildcard port; use
-  `127.0.0.1`, not `localhost`, to avoid name-resolution surprises).
-- Web origins: none needed (token exchange is server-to-server).
+- Realm `genoffice`: enable the realm-level **OAuth 2.0 Device Authorization
+  Grant**; set "Device Code Lifespan" (default 600 s) and polling cadence
+  to taste.
+- Client `genoffice-desktop`: public client, device grant enabled;
+  **Standard flow off, Direct access grants off**; no redirect URIs, no
+  web origins.
 - Scopes requested: `openid profile email offline_access`.
 - **Audience gotcha:** the access token `aud` defaults to the requesting
   client. Add the backend as an audience protocol mapper on the desktop
@@ -159,31 +207,39 @@ loopback flow causes trouble in some locked-down environment.
 Raw-TS-source workspace package mirroring `project-store` (path-injected,
 no Electron import):
 
-- PKCE utils: verifier/challenge generation, `state`, `nonce`.
-- Discovery client for `/.well-known/openid-configuration` with caching.
+- Discovery client for `/.well-known/openid-configuration` with caching
+  (authorization, token, device-authorization, revocation, end-session
+  endpoints).
+- Device authorization module: request the device grant, parse
+  `device_code` / `user_code` / `verification_uri(_complete)` /
+  `expires_in` / `interval`.
+- Token poller: poll the token endpoint with the device-grant type; handle
+  `authorization_pending`, `slow_down` (lengthen interval), `access_denied`,
+  `expired_token`; cancellable; stops at `expires_in`.
 - Token set module: parse JWTs, expiry with clock skew, id-token claim
-  checks (`iss`, `aud`, `nonce`, `sub`).
-- Loopback callback server: bind `127.0.0.1` on a random free port,
-  single-use, timeout, respond to browser with a plain "return to app"
-  page.
-- Auth orchestrator: `startLogin()` (builds URL, opens callback listener),
-  `completeLogin(code)` (token exchange), `refresh()`, `logout()` (revoke +
-  end-session URL construction). Pure logic — unit-testable with a mocked
-  token endpoint.
+  checks (`iss`, `aud`, `sub`).
 - Token store interface with a file-backed implementation; `safeStorage`
   encryption added as an Electron-side decorator (keeps the core
   Electron-free).
+- Auth orchestrator: `startLogin()` (device request + returns codes +
+  starts poll), `cancelLogin()`, `refresh()`, `logout()` (revoke +
+  end-session URL construction). Pure logic — unit-testable with mocked
+  endpoints.
 
 ### B. Shell main wiring (`apps/shell/src/main/index.ts`)
 
 - `registerAuthIpc()` in the registration list (~`:4741`): channels
-  `auth:login`, `auth:logout`, `auth:get-session`, push event
-  `auth:session-changed`.
+  `auth:login` (starts the device flow), `auth:cancel-login`,
+  `auth:logout`, `auth:get-session`, push events `auth:login-event`
+  (progress: user code, verification URI, waiting/success/failure — mirror
+  the `home:account-login-event` shape) and `auth:session-changed`.
 - Session manager: restore session at startup, single-flight login
   (concurrent `auth:login` calls reuse one attempt), proactive refresh
   timer, broadcast on any change.
-- Extend `safeExternalUrl()` gating to permit the configured issuer (and
-  its end-session endpoint) for browser opens.
+- External URL gate: `safeExternalUrl()` must permit the issuer origin —
+  used for `verification_uri_complete` during login and
+  `end_session_endpoint` on logout. Validate both against the configured
+  issuer before opening.
 - Config plumbing: `GENOFFICE_AUTH_ISSUER`, `GENOFFICE_AUTH_CLIENT_ID`,
   `GENOFFICE_BACKEND_URL` injected at build time via electron-builder
   `extraMetadata`; dev defaults point at `http://localhost:8080/realms/genoffice`
@@ -191,12 +247,16 @@ no Electron import):
 
 ### C. Preload + renderer
 
-- Shell preload exposes a typed `authApi`: `login()`, `logout()`,
-  `getSession()`, `onSessionChanged(cb)` — profile only.
+- Shell preload exposes a typed `authApi`: `login()`, `cancelLogin()`,
+  `logout()`, `getSession()`, `onLoginEvent(cb)`, `onSessionChanged(cb)` —
+  profile only, never tokens.
 - `useSession()` hook in `packages/ui` for shared chrome.
-- Settings Account pane (`SettingsModal.tsx`) drives login/logout with the
-  existing progress-event pattern; shows profile + backend connection
-  status.
+- Settings Account pane (`SettingsModal.tsx`) drives login/logout: during
+  login it shows the user code prominently (copyable), an "open
+  verification page" action, an expiry countdown, and cancel — the same
+  progress-event pattern the Genspark login uses. Also shows profile +
+  backend connection status, and the encrypted-storage warning when
+  `safeStorage` is unavailable.
 - New UI strings go into the sharded i18n dictionaries (`zh.ts` + every
   sibling; keep `t` out of hook dependency arrays).
 
@@ -221,6 +281,12 @@ no Electron import):
 
 - Main-process networking only; no renderer-visible tokens or endpoint
   URLs.
+- `device_code` stays in memory, is never logged, and polling stops on
+  cancel or expiry.
+- Display the `user_code` exactly as returned (no reformatting) — the user
+  comparing it on Keycloak's page is the anti-phishing step; always offer
+  `verification_uri_complete` but verify its origin against the configured
+  issuer before opening.
 - New external URLs always through `safeExternalUrl()` (browser opens) or
   the SSRF gate (`packages/electron-utils/src/safe-remote-url.ts`) for
   programmatic fetches.
@@ -237,9 +303,10 @@ standalone; later phases build on earlier ones.
 ### Phase 0 — local dev environment
 
 - [ ] `docker/keycloak/docker-compose.yml`: Keycloak (pin major version) +
-      realm import: realm `genoffice`, public client `genoffice-desktop`
-      (standard flow + PKCE, redirect `http://127.0.0.1:*`), audience
-      mapper for the backend, one test user.
+      realm import: realm `genoffice` with Device Authorization Grant
+      enabled, public client `genoffice-desktop` (device grant on,
+      standard + direct-access off, no redirect URIs), audience mapper for
+      the backend, one test user.
 - [ ] `docker/keycloak/README.md`: run instructions + the client/realm
       settings the export encodes (so it can be recreated by hand against
       an existing Keycloak).
@@ -248,37 +315,43 @@ standalone; later phases build on earlier ones.
 
 - [ ] Package scaffold mirroring `project-store` (raw TS source exports,
       npm-workspaces wiring, vitest).
-- [ ] PKCE utils (verifier/challenge S256, `state`, `nonce`) + unit tests.
 - [ ] Discovery client (well-known fetch, caching, error surface) + tests.
-- [ ] JWT/token-set module (parse, expiry + skew, id-token claim checks)
-      + tests (include a `aud`-mismatch fixture).
-- [ ] Loopback callback server (random port, single use, timeout, safe
-      response page) + tests.
+- [ ] Device authorization request module (POST
+      device_authorization_endpoint, parse response incl.
+      `verification_uri_complete`, `expires_in`, `interval`) + tests.
+- [ ] Token poller (device grant type; `authorization_pending` /
+      `slow_down` / `access_denied` / `expired_token` handling; cancel;
+      expiry stop) + tests.
+- [ ] JWT/token-set module (parse, expiry + skew, id-token `iss`/`aud`/
+      `sub` checks) + tests (include an `aud`-mismatch fixture).
 - [ ] Token store interface + file-backed store (`0600`) + tests.
-- [ ] Auth orchestrator (`startLogin`/`completeLogin`/`refresh`/`logout`)
-      against a mocked token endpoint + tests (happy path, expiry refresh,
-      refresh-token rotation, revoke-on-logout).
+- [ ] Auth orchestrator (`startLogin`/`cancelLogin`/`refresh`/`logout`)
+      against mocked endpoints + tests (happy path, pending → approved,
+      user denial, code expiry, refresh, revoke-on-logout).
 
 ### Phase 2 — shell main integration
 
 - [ ] Config module: build-time `extraMetadata` env → typed
       `authConfig`, dev defaults to local Keycloak.
-- [ ] `safeExternalUrl()` extension for the issuer.
+- [ ] `safeExternalUrl()` extension permitting the issuer origin
+      (verification + end-session URLs, validated against config).
 - [ ] Session manager (restore at startup, single-flight login, refresh
       timer, change events).
-- [ ] `registerAuthIpc()` (`auth:login|logout|get-session`,
+- [ ] `registerAuthIpc()` (`auth:login`, `auth:cancel-login`,
+      `auth:logout`, `auth:get-session`, `auth:login-event`,
       `auth:session-changed`) with zod-validated payloads.
 - [ ] Electron-side `safeStorage` token-store decorator with the WSL2 /
       headless fallback.
-- [ ] Manual smoke test: login against local Keycloak, restart app, still
-      logged in, logout clears everything.
+- [ ] Manual smoke test: device login against local Keycloak, restart
+      app, still logged in, logout clears everything.
 
 ### Phase 3 — renderer UI
 
 - [ ] Shell preload `authApi` + shared types.
 - [ ] `useSession()` hook in `packages/ui`.
-- [ ] Settings Account pane: login/logout buttons, progress, profile
-      display, encrypted-storage warning when `safeStorage` is
+- [ ] Settings Account pane: login flow with user-code display (copyable),
+      "open verification page", expiry countdown, cancel, logout; profile
+      display; encrypted-storage warning when `safeStorage` is
       unavailable.
 - [ ] i18n strings for all of the above (`zh.ts` + all sibling shards).
 
