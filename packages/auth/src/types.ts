@@ -131,3 +131,120 @@ export interface JwtExpiryOptions {
   /** Clock-skew window in milliseconds applied *before* `exp` (default 30 s) */
   skewMs?: number
 }
+
+// ────────────────────────────────────────────────────────────
+// Token store
+// ────────────────────────────────────────────────────────────
+
+/**
+ * Profile snapshot taken from the id-token claims. `sub` is the stable user
+ * identity; the rest are the display fields the UI shows — nothing else
+ * leaks out of the token.
+ */
+export interface UserProfile {
+  sub: string
+  name?: string
+  email?: string
+  preferredUsername?: string
+}
+
+/**
+ * The persisted credential set: refresh token + id token + profile snapshot
+ * + metadata. Access tokens are deliberately NOT part of it — they stay in
+ * main-process memory only.
+ */
+export interface StoredTokenSet {
+  /** Opaque refresh token (`offline_access`); the only re-login credential */
+  refreshToken: string
+  /** Latest id token; reused as `id_token_hint` on logout after a restart */
+  idToken: string
+  profile: UserProfile
+  /** Epoch milliseconds when the token set was obtained */
+  obtainedAt: number
+  /** Issuer the id-token claims were validated against */
+  issuer: string
+}
+
+/**
+ * Persistence seam for {@link StoredTokenSet}. The core ships a plain
+ * file-backed implementation; the Electron side wraps it in a `safeStorage`
+ * encrypting decorator (same interface, so the core stays Electron-free).
+ */
+export interface TokenStore {
+  load(): Promise<StoredTokenSet | null>
+  save(tokenSet: StoredTokenSet): Promise<void>
+  clear(): Promise<void>
+}
+
+/** Options of {@link FileTokenStore}. */
+export interface FileTokenStoreOptions {
+  /** File path the store reads and writes (created with mode 0600) */
+  path: string
+}
+
+// ────────────────────────────────────────────────────────────
+// Auth orchestrator
+// ────────────────────────────────────────────────────────────
+
+/** Provider configuration for {@link AuthOrchestrator}. */
+export interface AuthConfig {
+  /** Issuer URL, e.g. http://localhost:8080/realms/genoffice */
+  issuer: string
+  /** OAuth client_id (a public client with the device grant enabled) */
+  clientId: string
+  /** Expected id-token `aud`; defaults to {@link AuthConfig.clientId} */
+  audience?: string
+  /** Space-separated scope (default `openid profile email offline_access`) */
+  scope?: string
+}
+
+/** Constructor options of {@link AuthOrchestrator}. */
+export interface AuthOrchestratorOptions {
+  config: AuthConfig
+  store: TokenStore
+  fetchFn?: FetchLike
+  now?: Clock
+  sleep?: Sleep
+}
+
+/**
+ * The live in-memory session. Access and id tokens live here only — they are
+ * never persisted; the refresh token is held internally and goes through the
+ * {@link TokenStore} exclusively.
+ */
+export interface AuthSession {
+  accessToken: string
+  /** Current id token; reused as `id_token_hint` on logout */
+  idToken: string
+  profile: UserProfile
+  /** Epoch milliseconds when this token set was obtained */
+  obtainedAt: number
+  /** Epoch milliseconds when the access token expires, when `expires_in` was sent */
+  accessTokenExpiresAt?: number
+}
+
+/** What `startLogin()` resolves with once the device code is available. */
+export interface LoginHandle {
+  /** Shown to the user verbatim — the anti-phishing comparison step */
+  userCode: string
+  /** verification_uri; main-process data (open in the system browser) */
+  verificationUri: string
+  /** verification_uri + user_code, when the provider supplies it */
+  verificationUriComplete?: string
+  /** Epoch milliseconds when the device_code expires */
+  expiresAt: number
+  /** Resolves with the session once the user approves; rejects typed on every terminal condition */
+  tokens: Promise<AuthSession>
+  /** Cancels this login attempt (delegates to `cancelLogin()`) */
+  cancel(): void
+}
+
+/** What `logout()` resolves with. */
+export interface LogoutResult {
+  /**
+   * `end_session_endpoint` + `id_token_hint`, constructed for the caller to
+   * open (core never opens anything). `undefined` when discovery offers no
+   * end-session endpoint or no id token is available for the hint.
+   */
+  endSessionUrl?: string
+}
