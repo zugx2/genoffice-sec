@@ -1,0 +1,27 @@
+# Local dev Keycloak for the GenOffice cloud-backend / OIDC work
+# (see docs/cloud-backend-auth.md, Phase 0).
+#
+# Dev-only by design: plain HTTP, bootstrap admin credentials, and no
+# persistent state — `docker compose down -v` wipes everything and the realm
+# re-imports from realm/genoffice-realm.json on the next fresh boot.
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.2
+    container_name: genoffice-keycloak
+    command: ["start-dev", "--import-realm"]
+    environment:
+      # Dev-only bootstrap admin for the master realm (local debugging of the
+      # imported realm). Never use credentials like this outside local dev.
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      # Pin the advertised issuer to the dev anchor the desktop app expects
+      # (docs/cloud-backend-auth.md: http://localhost:8080/realms/genoffice),
+      # so advertised endpoints/tokens never drift with the Host header used.
+      KC_HOSTNAME: http://localhost:8080
+    ports:
+      # Dev config anchor (Phase 2 depends on this): Keycloak MUST be
+      # reachable on host port 8080.
+      - "8080:8080"
+    volumes:
+      # Realm import (declarative; skipped automatically if the realm exists).
+      - ./realm:/opt/keycloak/data/import:ro

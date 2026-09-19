@@ -1,0 +1,62 @@
+{
+  "realm": "genoffice",
+  "displayName": "GenOffice (local dev)",
+  "enabled": true,
+  "sslRequired": "none",
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "oauth2DeviceCodeLifespan": 600,
+  "clients": [
+    {
+      "clientId": "genoffice-desktop",
+      "name": "GenOffice Desktop",
+      "description": "Electron desktop suite. Device Authorization Grant (RFC 8628) is the only enabled flow.",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": true,
+      "bearerOnly": false,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "attributes": {
+        "oauth2.device.authorization.grant.enabled": "true"
+      },
+      "redirectUris": [],
+      "webOrigins": [],
+      "protocolMappers": [
+        {
+          "name": "genoffice-backend-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "consentRequired": false,
+          "config": {
+            "included.client.audience": "genoffice-backend",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "testuser",
+      "enabled": true,
+      "realmRoles": [
+        "default-roles-genoffice"
+      ],
+      "email": "testuser@example.com",
+      "emailVerified": true,
+      "firstName": "Test",
+      "lastName": "User",
+      "credentials": [
+        {
+          "type": "password",
+          "value": "testpass",
+          "temporary": false
+        }
+      ]
+    }
+  ]
+}
