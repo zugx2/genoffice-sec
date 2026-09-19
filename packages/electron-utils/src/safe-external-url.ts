@@ -7,6 +7,16 @@
 export interface SafeExternalUrlOptions {
   /** Protocol allowlist (with trailing colon). Defaults to http/https only. */
   allowedProtocols?: readonly string[]
+  /**
+   * Exact-origin allowlist (`scheme://host[:port]`, as `new URL(u).origin`
+   * renders it). When set, a URL that passes the protocol check must also
+   * have its origin listed here verbatim — the cloud-auth gate uses this to
+   * confine the URLs it opens on the issuer's behalf (device-flow
+   * verification page, end-session page) to the configured issuer's origin,
+   * so a compromised discovery response cannot aim the system browser
+   * elsewhere.
+   */
+  allowedOrigins?: readonly string[]
 }
 
 const DEFAULT_PROTOCOLS: readonly string[] = ['http:', 'https:']
@@ -28,5 +38,8 @@ export function safeExternalUrl(url: unknown, options?: SafeExternalUrlOptions):
     return null
   }
   const allowed = options?.allowedProtocols ?? DEFAULT_PROTOCOLS
-  return allowed.includes(parsed.protocol) ? text : null
+  if (!allowed.includes(parsed.protocol)) return null
+  const allowedOrigins = options?.allowedOrigins
+  if (allowedOrigins !== undefined && !allowedOrigins.includes(parsed.origin)) return null
+  return text
 }

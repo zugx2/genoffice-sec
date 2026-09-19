@@ -21,6 +21,13 @@ All application windows run with the full Electron renderer lockdown:
   allow mailto). `file:`, `javascript:`, and custom schemes are always rejected.
 - No API keys are hardcoded. AI requests are proxied through the signed-in
   account by default; user-supplied keys stay in the OS-level settings store.
+- Cloud sign-in (device authorization grant) runs entirely in the main
+  process: access/refresh/id tokens and all endpoint URLs stay there, the
+  renderer only ever receives the session profile and login progress. The
+  refresh-token file is `safeStorage`-encrypted (plain 0600 file fallback
+  where no OS keyring exists), and issuer pages (device verification,
+  end-session) open only through `safeExternalUrl` with the configured
+  issuer's origin allowlisted.
 
 ## Threat Model: AI-Generated Layout Scripts (slides)
 

@@ -24,6 +24,15 @@
  * Official release jobs inject it through extraMetadata so the endpoint stays
  * out of source. Without it, font download prompts/catalog entries are hidden;
  * users can still install local font files.
+ *
+ * GENOFFICE_AUTH_ISSUER / GENOFFICE_AUTH_CLIENT_ID / GENOFFICE_BACKEND_URL —
+ * cloud-backend endpoints (docs/cloud-backend-auth.md): the OIDC issuer
+ * (Keycloak realm), the public device-grant client id, and the backend
+ * service base URL. Injected the same way (CI secrets → extraMetadata →
+ * read back by src/main/auth/config.ts). Both auth values must be set
+ * together or not at all; when unset (source/fork builds) the config module
+ * falls back to its local-dev defaults, so cloud login is still exercisable
+ * against a local Keycloak.
  */
 
 const { execFileSync } = require('node:child_process')
@@ -50,6 +59,17 @@ const fontCdnUrl = normalizeHttpsBaseUrl(
   'GENOFFICE_FONT_CDN_URL',
   process.env.GENOFFICE_FONT_CDN_URL,
 )
+const authIssuer = normalizeHttpsBaseUrl('GENOFFICE_AUTH_ISSUER', process.env.GENOFFICE_AUTH_ISSUER)
+const authClientId = (process.env.GENOFFICE_AUTH_CLIENT_ID || '').trim()
+const backendUrl = normalizeHttpsBaseUrl('GENOFFICE_BACKEND_URL', process.env.GENOFFICE_BACKEND_URL)
+// half-configured auth is a release bug: fail the build instead of shipping
+// an app that authenticates against the dev Keycloak or the wrong client
+if ((authIssuer || authClientId || backendUrl) && !(authIssuer && authClientId)) {
+  throw new Error(
+    'GENOFFICE_AUTH_ISSUER and GENOFFICE_AUTH_CLIENT_ID must be set together ' +
+      '(set both, or neither to fall back to the local-dev defaults)',
+  )
+}
 
 // GENOFFICE_MAC_X64=1 — opt into packaging the Intel (x64) dmg/zip alongside
 // arm64. Off by default: Intel packages must only ever ship signed with the
@@ -631,6 +651,10 @@ if (ga4MeasurementId && ga4ApiSecret) {
   }
 }
 if (fontCdnUrl) extraMetadata.genofficeFontCdn = { baseUrl: fontCdnUrl }
+if (authIssuer && authClientId) {
+  extraMetadata.genofficeAuth = { issuer: authIssuer, clientId: authClientId }
+}
+if (backendUrl) extraMetadata.genofficeBackend = { baseUrl: backendUrl }
 if (Object.keys(extraMetadata).length) config.extraMetadata = extraMetadata
 
 module.exports = config

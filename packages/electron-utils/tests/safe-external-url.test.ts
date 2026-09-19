@@ -44,4 +44,37 @@ describe('safeExternalUrl', () => {
     expect(safeExternalUrl('   ')).toBeNull()
     expect(safeExternalUrl('  file:///etc/passwd  ')).toBeNull()
   })
+
+  it('supports an exact-origin allowlist on top of the protocol check', () => {
+    const opts = { allowedOrigins: ['https://sso.example.com'] }
+    // same origin, any path/query — the device-flow verification and
+    // end-session pages live under the issuer origin
+    expect(safeExternalUrl('https://sso.example.com/realms/genoffice/protocol', opts)).toBe(
+      'https://sso.example.com/realms/genoffice/protocol',
+    )
+    expect(safeExternalUrl('https://sso.example.com/device?user_code=ABCD', opts)).toBe(
+      'https://sso.example.com/device?user_code=ABCD',
+    )
+    // different origin / different scheme-port pair
+    expect(safeExternalUrl('https://evil.example/realms/genoffice', opts)).toBeNull()
+    expect(safeExternalUrl('http://sso.example.com/device', opts)).toBeNull()
+    // still subject to the protocol allowlist
+    expect(safeExternalUrl('file:///etc/passwd', opts)).toBeNull()
+  })
+
+  it('normalizes origin comparison the way the URL parser does', () => {
+    // host case and the default-port elision are parser-level, so a URL that
+    // renders to the allowed origin passes even when spelled differently
+    const opts = { allowedOrigins: ['http://localhost:8080'] }
+    expect(safeExternalUrl('http://LOCALHOST:8080/realms/genoffice', opts)).toBe(
+      'http://LOCALHOST:8080/realms/genoffice',
+    )
+    // an explicitly spelled-out default port still matches origin-wise (the
+    // parser elides :443 from the origin)
+    expect(
+      safeExternalUrl('https://sso.example:443/device', {
+        allowedOrigins: ['https://sso.example'],
+      }),
+    ).toBe('https://sso.example:443/device')
+  })
 })

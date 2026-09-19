@@ -1,0 +1,73 @@
+/**
+ * Cloud-auth IPC contract between the shell main process and (from Phase 3
+ * on) the preload/renderer. Channel names plus the exact wire payload types.
+ *
+ * Security invariants (docs/cloud-backend-auth.md, security checklist):
+ * - the renderer NEVER receives tokens (access/refresh/id), the device code,
+ *   or endpoint URLs — only the session profile below and login progress;
+ * - every payload crossing these channels is zod-validated in the main
+ *   process (apps/shell/src/main/auth/ipc.ts, following the sheets IPC
+ *   precedent).
+ */
+
+export const AUTH_CHANNELS = {
+  /** start (or join) the device-authorization-grant login */
+  login: 'auth:login',
+  /** cancel the in-flight login attempt */
+  cancelLogin: 'auth:cancel-login',
+  /** revoke + wipe + open the issuer's end-session page */
+  logout: 'auth:logout',
+  /** current session snapshot (profile only, never tokens) */
+  getSession: 'auth:get-session',
+  /** push: login progress, streamed to the renderer that started the login */
+  loginEvent: 'auth:login-event',
+  /** push: broadcast to every webContents when the session appears/leaves */
+  sessionChanged: 'auth:session-changed',
+} as const
+
+/**
+ * Login progress pushed over `auth:login-event`. Mirrors the
+ * `home:account-login-event` progress pattern but never carries a URL: the
+ * main process alone opens the verification page (origin-checked against
+ * the configured issuer), the renderer only shows the user code.
+ */
+export type AuthLoginEventPayload =
+  | {
+      /** the device code was issued; waiting for the user to approve it */
+      status: 'waiting-for-confirmation'
+      /** shown verbatim (no reformatting) — the anti-phishing comparison step */
+      userCode: string
+      /** epoch ms when the device code expires */
+      expiresAt: number
+    }
+  | { status: 'success' }
+  | {
+      status: 'failure'
+      /** stable auth error code (`network_error`, `access_denied`, …) — never a raw message, which can embed endpoint URLs */
+      error: string
+    }
+
+/** Session profile decoded from the id token — the token itself never crosses. */
+export interface AuthSessionProfile {
+  sub: string
+  name?: string
+  email?: string
+  /** realm roles from the id token's `realm_access.roles` (empty when absent) */
+  roles: string[]
+}
+
+/** How the refresh-token file is protected on this machine. */
+export type AuthStorageKind = 'encrypted' | 'plain-file'
+
+/** Response of `auth:get-session`. */
+export interface AuthSessionSnapshot {
+  status: 'authenticated' | 'anonymous'
+  profile?: AuthSessionProfile
+  /** `'plain-file'` means safeStorage/keyring is unavailable — Phase 3 warns */
+  storage: AuthStorageKind
+}
+
+/** Payload of `auth:session-changed`; details follow via `auth:get-session`. */
+export interface AuthSessionChangedPayload {
+  status: 'authenticated' | 'anonymous'
+}

@@ -70,6 +70,7 @@ import { startControlServer, type ControlServer } from './control-server'
 import { controlHandler } from './control-handlers'
 import { installCliLinkBestEffort } from './cli-link'
 import { registerIntegrationsIpc } from './integrations-ipc'
+import { registerAuthIpc, restoreAuthSession } from './auth/ipc'
 import {
   ANALYTICS_ENABLED_KEY,
   analyticsEnabledFrom,
@@ -4742,6 +4743,10 @@ registerAiIpc()
 registerProjectIpc()
 registerDocsIpc()
 registerHomeIpc()
+// cloud-auth session (docs/cloud-backend-auth.md): the module owns its IPC
+// surface; the proxy bootstrap is injected so login traffic rides the same
+// proxy-aware fetch stack as the Genspark login
+registerAuthIpc({ waitForProxy: () => proxyBootstrap })
 registerIntegrationsIpc({
   settingsPath: APP_SETTINGS_PATH,
   window: () => shellWindow,
@@ -4857,6 +4862,13 @@ app.whenReady().then(async () => {
   }
 
   proxyBootstrap = installMainProcessProxy()
+  // cloud-auth session restore: fire-and-forget off the startup path, but
+  // only after the proxy bootstrap settles (the token refresh rides the
+  // same proxy-aware fetch stack); restore failures stay logged-out
+  void proxyBootstrap.then(
+    () => restoreAuthSession(),
+    () => restoreAuthSession(),
+  )
   app.setAccessibilitySupportEnabled(true)
   // Settle the shared uiLang from saved settings BEFORE any tab renderer can
   // ask 'app:get-language': the editor handlers return the i18n module's
