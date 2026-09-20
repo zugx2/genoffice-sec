@@ -46,8 +46,16 @@ services:
       # case (services/backend/README.md, "Docker networking").
       GENOFFICE_BACKEND_ISSUER: 'http://localhost:8080/realms/genoffice'
       GENOFFICE_BACKEND_JWKS_URL: 'http://keycloak:8080/realms/genoffice/protocol/openid-connect/certs'
+      # SQLite file on a named volume, so backend data survives container
+      # restarts (a plain `down` keeps volumes; `down -v` wipes everything).
+      GENOFFICE_BACKEND_DB: /data/genoffice-backend.db
+    volumes:
+      - backend-data:/data
     ports:
       # Dev config anchor: the shell's DEV_BACKEND_URL expects port 8000.
       - '8000:8000'
     depends_on:
       - keycloak
+
+volumes:
+  backend-data:

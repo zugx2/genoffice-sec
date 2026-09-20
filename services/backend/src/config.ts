@@ -29,6 +29,12 @@ export interface BackendConfig {
   jwksUrl: string
   /** Leeway applied to `exp`/`nbf` in seconds (default 30) */
   clockSkewSeconds: number
+  /**
+   * SQLite database path: `:memory:` (default; unit tests, throwaway runs)
+   * or a file path (the compose service mounts a volume and points this at
+   * it). Parent directories are created as needed.
+   */
+  dbPath: string
 }
 
 export const DEFAULT_PORT = 8000
@@ -36,6 +42,7 @@ export const DEFAULT_HOST = '127.0.0.1'
 export const DEFAULT_ISSUER = 'http://localhost:8080/realms/genoffice'
 export const DEFAULT_AUDIENCE = 'genoffice-backend'
 export const DEFAULT_CLOCK_SKEW_SECONDS = 30
+export const DEFAULT_DB_PATH = ':memory:'
 
 /** Strip trailing slashes so two issuers differing only in them compare equal (packages/auth convention). */
 function stripTrailingSlashes(value: string): string {
@@ -127,9 +134,11 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     }
   }
 
+  const dbPath = readString(env, 'GENOFFICE_BACKEND_DB') ?? DEFAULT_DB_PATH
+
   if (problems.length > 0) {
     throw new ConfigError(`Invalid backend configuration:\n  - ${problems.join('\n  - ')}`)
   }
 
-  return { port, host, issuer, audience, jwksUrl, clockSkewSeconds }
+  return { port, host, issuer, audience, jwksUrl, clockSkewSeconds, dbPath }
 }

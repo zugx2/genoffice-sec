@@ -9,6 +9,7 @@ export {
   ConfigError,
   DEFAULT_AUDIENCE,
   DEFAULT_CLOCK_SKEW_SECONDS,
+  DEFAULT_DB_PATH,
   DEFAULT_HOST,
   DEFAULT_ISSUER,
   DEFAULT_PORT,
@@ -16,6 +17,19 @@ export {
   loadConfig,
   type BackendConfig,
 } from './config.js'
+export { ApiError, notFound } from './errors.js'
+export { storagePlugin, type StorageOptions } from './plugins/storage.js'
+export { BackendStore } from './storage/store.js'
+export type {
+  ChatAttachment,
+  ChatMessage,
+  ChatMessageInput,
+  ChatRecord,
+  ChatScope,
+  ChatSummaryRecord,
+  ProjectRecord,
+  ToolActivity,
+} from './storage/store.js'
 export {
   verifyAuth,
   type AccessTokenClaims,

@@ -36,6 +36,7 @@ beforeAll(async () => {
       audience: AUDIENCE,
       jwksUrl: jwks.url,
       clockSkewSeconds: 30,
+      dbPath: ':memory:',
     },
     logger: false,
   })
@@ -197,6 +198,7 @@ describe('JWKS kid rotation', () => {
         audience: AUDIENCE,
         jwksUrl: jwks.url,
         clockSkewSeconds: 30,
+        dbPath: ':memory:',
       },
       logger: false,
       jwksCooldownMs: 100,
@@ -248,6 +250,7 @@ describe('validation infrastructure failures', () => {
         audience: AUDIENCE,
         jwksUrl: deadUrl,
         clockSkewSeconds: 30,
+        dbPath: ':memory:',
       },
       logger: false,
     })

@@ -3,6 +3,7 @@ import {
   ConfigError,
   DEFAULT_AUDIENCE,
   DEFAULT_CLOCK_SKEW_SECONDS,
+  DEFAULT_DB_PATH,
   DEFAULT_HOST,
   DEFAULT_ISSUER,
   DEFAULT_PORT,
@@ -19,11 +20,13 @@ describe('loadConfig defaults', () => {
       audience: DEFAULT_AUDIENCE,
       jwksUrl: `${DEFAULT_ISSUER}/protocol/openid-connect/certs`,
       clockSkewSeconds: DEFAULT_CLOCK_SKEW_SECONDS,
+      dbPath: DEFAULT_DB_PATH,
     })
   })
 
   it('treats empty-string variables as unset', () => {
     expect(loadConfig({ GENOFFICE_BACKEND_PORT: '' }).port).toBe(DEFAULT_PORT)
+    expect(loadConfig({ GENOFFICE_BACKEND_DB: '' }).dbPath).toBe(DEFAULT_DB_PATH)
   })
 })
 
@@ -35,6 +38,7 @@ describe('loadConfig overrides', () => {
       GENOFFICE_BACKEND_ISSUER: 'https://sso.example.com/realms/prod',
       GENOFFICE_BACKEND_AUDIENCE: 'other-audience',
       GENOFFICE_BACKEND_CLOCK_SKEW_SECONDS: '10',
+      GENOFFICE_BACKEND_DB: '/var/lib/genoffice/backend.db',
     })
     expect(config).toEqual({
       port: 9001,
@@ -43,6 +47,7 @@ describe('loadConfig overrides', () => {
       audience: 'other-audience',
       jwksUrl: 'https://sso.example.com/realms/prod/protocol/openid-connect/certs',
       clockSkewSeconds: 10,
+      dbPath: '/var/lib/genoffice/backend.db',
     })
   })
 

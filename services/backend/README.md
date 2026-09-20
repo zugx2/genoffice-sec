@@ -7,20 +7,25 @@ on unknown `kid`), plus `iss` / `aud` / `exp` checks with a small clock skew —
 and never calls token introspection or userinfo. The `sub` claim is the user
 identity everywhere; no local user table.
 
-Current surface: `GET /whoami`. Later phases (projects, chats, documents)
-register additional route plugins in `src/app.ts`.
+Current surface: `GET /whoami` plus the projects/chats CRUD (Phase 6a).
+Later phases (documents) register additional route plugins in `src/app.ts`.
 
 ## Layout
 
-| Path                         | What it is                                                                  |
-| ---------------------------- | --------------------------------------------------------------------------- |
-| `src/config.ts`              | Typed env config, validated fail-fast at startup                            |
-| `src/plugins/verify-auth.ts` | `verifyAuth` fastify plugin: `authenticate` guard + `request.auth` payload  |
-| `src/routes/whoami.ts`       | `GET /whoami` — identity from the verified token payload only               |
-| `src/app.ts`                 | App factory (`buildApp`) — composes plugins, no listen; testable via inject |
-| `src/server.ts`              | Entry point: load config → build → listen → graceful shutdown               |
-| `tests/`                     | vitest unit suite (real signed tokens against a local JWKS server)          |
-| `scripts/integration.mts`    | Live-stack integration check (NOT part of plain `npm test`)                 |
+| Path                           | What it is                                                                  |
+| ------------------------------ | --------------------------------------------------------------------------- |
+| `src/config.ts`                | Typed env config, validated fail-fast at startup                            |
+| `src/plugins/verify-auth.ts`   | `verifyAuth` fastify plugin: `authenticate` guard + `request.auth` payload  |
+| `src/plugins/error-handler.ts` | Global error handler: uniform `{error:{code,message}}` envelope             |
+| `src/plugins/storage.ts`       | Storage plugin: opens the SQLite store, decorates `app.store`               |
+| `src/storage/store.ts`         | Persistence: sub-scoped prepared statements over `node:sqlite`              |
+| `src/routes/whoami.ts`         | `GET /whoami` — identity from the verified token payload only               |
+| `src/routes/projects.ts`       | `/projects` CRUD                                                            |
+| `src/routes/chats.ts`          | `/projects/:projectId/chats` CRUD                                           |
+| `src/app.ts`                   | App factory (`buildApp`) — composes plugins, no listen; testable via inject |
+| `src/server.ts`                | Entry point: load config → build → listen → graceful shutdown               |
+| `tests/`                       | vitest unit suite (real signed tokens against a local JWKS server)          |
+| `scripts/integration.mts`      | Live-stack integration check (NOT part of plain `npm test`)                 |
 
 ## Run (dev)
 
@@ -66,6 +71,59 @@ the JWKS fetch location to `http://keycloak:8080/...`, while
 `GENOFFICE_BACKEND_ISSUER` stays the advertised issuer. Signature validation
 and claim checking are unaffected; only the HTTP fetch target differs.
 
+## API
+
+Everything requires a valid bearer token; the verified token's `sub` is the
+user identity. **No endpoint takes a user parameter** — ownership comes from
+the token, and every query is `WHERE sub = ?` in the store, so cross-user
+access is structurally impossible. Foreign ids answer 404 byte-identical to
+missing ones (no existence leak). All error responses use the uniform
+envelope `{error: {code, message}}` (401s additionally carry
+`WWW-Authenticate: Bearer`).
+
+### Resources
+
+| Method   | Path                                 | Body / notes                                             | Success                   |
+| -------- | ------------------------------------ | -------------------------------------------------------- | ------------------------- |
+| `GET`    | `/projects`                          | list (info records, no `files`; stable `(createdAt,id)`) | `200 {projects:[…]}`      |
+| `POST`   | `/projects`                          | `{name}` (non-blank, ≤ 200 chars)                        | `201` full record         |
+| `GET`    | `/projects/:projectId`               | full record incl. `files`                                | `200` / `404`             |
+| `PUT`    | `/projects/:projectId`               | `{name, files}` — full-object replace                    | `200` / `404`             |
+| `DELETE` | `/projects/:projectId`               | hard delete, cascades chats + messages                   | `204` / `404`             |
+| `GET`    | `/projects/:projectId/chats`         | chat list (id/createdAt/updatedAt/version/messageCount)  | `200 {chats:[…]}` / `404` |
+| `POST`   | `/projects/:projectId/chats`         | no body — creates an empty chat                          | `201` / `404`             |
+| `GET`    | `/projects/:projectId/chats/:chatId` | `?limit=N` → most recent N messages (ascending seq)      | `200` / `404`             |
+| `PUT`    | `/projects/:projectId/chats/:chatId` | `{messages:[…]}` — full replace of the message list      | `200` / `404`             |
+| `DELETE` | `/projects/:projectId/chats/:chatId` | hard delete                                              | `204` / `404`             |
+
+The model mirrors `packages/project-store` (the local filesystem store):
+a project is `{name, files}`; a chat belongs to exactly one project and is
+an ordered message list — `role` (`user`/`assistant`), `text`, optional
+`ts` (client timestamp; server defaults it), `fileRef`, `tools`,
+`attachments`, `scope`, exactly as the local `ChatMessage`. The server
+assigns ids (UUIDs), `seq` (1..n by array position on every replace), and
+`ts` defaults; `seq`/`version`/`createdAt`/`updatedAt`/`id` in a request
+body are rejected (`additionalProperties: false`, no type coercion).
+
+### Version semantics (Task 11's conflict policy)
+
+Every mutable record carries `version` (monotonic integer, starts at 1) and
+`updatedAt` (UTC ISO). Each successful mutation — `PUT` on a project or
+chat — increments `version` and refreshes `updatedAt`. `POST` returns
+`version: 1`; `DELETE` removes the record entirely. There is no `ETag` /
+`If-Match` in this phase: a client detects a conflict by comparing the
+`version` it last saw with the one a `PUT` response (or a re-`GET`) reports,
+and must re-read + merge before overwriting. Message replaces are
+last-writer-wins per version bump.
+
+### Validation limits
+
+Message field caps mirror the local store's truncation limits
+(`packages/project-store`): `text` ≤ 32 000 chars, tool `input`/`output`
+≤ 16 000, scope `text` ≤ 400. The local store truncates silently; the API
+**rejects** with 400, so clients apply the same truncation before
+uploading. Request bodies are limited to fastify's 1 MiB default.
+
 ## Configuration
 
 All optional; validated at startup with a fail-fast error naming every bad
@@ -79,6 +137,11 @@ variable.
 | `GENOFFICE_BACKEND_AUDIENCE`           | `genoffice-backend`                      | Required `aud` claim (realm's audience mapper adds it)            |
 | `GENOFFICE_BACKEND_JWKS_URL`           | `{issuer}/protocol/openid-connect/certs` | JWKS fetch location (override for the Docker case)                |
 | `GENOFFICE_BACKEND_CLOCK_SKEW_SECONDS` | `30`                                     | Leeway on `exp`/`nbf`                                             |
+| `GENOFFICE_BACKEND_DB`                 | `:memory:`                               | SQLite path (`:memory:` or a file; parent dirs are created)       |
+
+The compose `backend` service sets `GENOFFICE_BACKEND_DB=/data/genoffice-backend.db`
+with the `backend-data` named volume mounted at `/data`, so data survives
+container restarts (`docker compose down -v` wipes it — dev stack, by design).
 
 Note: `docs/cloud-backend-auth.md` writes the JWKS path as
 `protocol/openid-connection/certs`; the endpoint Keycloak actually serves is
@@ -102,6 +165,19 @@ curl -i http://localhost:8000/whoami
 curl -s http://localhost:8000/whoami \
   -H "Authorization: Bearer $ACCESS_TOKEN"
 # -> {"sub":"<user uuid>","roles":["default-roles-genoffice"],"scope":"openid profile email"}
+
+# projects/chats CRUD with the same token
+curl -s -X POST http://localhost:8000/projects \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H 'content-type: application/json' -d '{"name":"My project"}'
+# -> 201 {"id":"<uuid>","name":"My project","files":[],"createdAt":…,"updatedAt":…,"version":1}
+
+curl -s http://localhost:8000/projects -H "Authorization: Bearer $ACCESS_TOKEN"
+
+curl -s -X PUT http://localhost:8000/projects/$PROJECT_ID/chats/$CHAT_ID \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -H 'content-type: application/json' \
+  -d '{"messages":[{"role":"user","text":"hello"}]}'
 ```
 
 ## Tests
@@ -111,8 +187,9 @@ curl -s http://localhost:8000/whoami \
 npm run -w @genoffice/backend test
 
 # integration check against the live Phase 0 stack: boots Keycloak if it is
-# down, mints a real device-flow token as testuser, starts the backend
-# in-process, and asserts GET /whoami returns that identity
+# down, mints real device-flow tokens as testuser AND a second provisioned
+# user, starts the backend in-process on a throwaway file DB, and asserts
+# whoami + the full projects/chats CRUD including cross-user isolation
 npm run -w @genoffice/backend test:integration
 ```
 
@@ -126,8 +203,16 @@ real JWKS endpoint over HTTP, so signature failures, claim rejections, and
   contain `genoffice-backend`. The backend never inherits a client's trust
   decisions.
 - Errors are stable JSON codes (`missing_token`, `invalid_token`,
-  `validation_unavailable`); 401s carry `WWW-Authenticate: Bearer`. No token
-  material is ever echoed in a response or a log line.
+  `validation_unavailable`, `not_found`, `validation_failed`,
+  `bad_request`, `internal_error`) in the uniform `{error:{code,message}}`
+  envelope; 401s carry `WWW-Authenticate: Bearer`. No token material is ever
+  echoed in a response or a log line; 500s never leak internals.
+- Ownership scoping is structural: `sub` comes only from the verified
+  token, every store method takes it as its first parameter, and every SQL
+  statement (including deletes) binds it. Foreign and missing resources
+  answer the same 404.
+- All SQL goes through prepared statements with bound parameters — no user
+  input is ever interpolated into a query string.
 - Request logging redacts `authorization` and `cookie` headers (fastify's
   default req serializer omits headers; the redact list guards against
   adopting pino's standard serializer, which includes them).

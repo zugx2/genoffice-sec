@@ -19,6 +19,7 @@ app.log.info(
     audience: config.audience,
     jwksUrl: config.jwksUrl,
     clockSkewSeconds: config.clockSkewSeconds,
+    dbPath: config.dbPath,
   },
   'genoffice backend listening',
 )

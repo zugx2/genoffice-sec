@@ -9,7 +9,11 @@
 
 import Fastify, { type FastifyInstance, type FastifyServerOptions } from 'fastify'
 import type { BackendConfig } from './config.js'
+import { errorHandlerPlugin } from './plugins/error-handler.js'
+import { storagePlugin } from './plugins/storage.js'
 import { verifyAuth } from './plugins/verify-auth.js'
+import { chatRoutes } from './routes/chats.js'
+import { projectRoutes } from './routes/projects.js'
 import { whoamiRoutes } from './routes/whoami.js'
 
 export interface BuildAppOptions {
@@ -41,8 +45,17 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
           censor: '[redacted]',
         },
       } satisfies FastifyServerOptions['logger']),
+    ajv: {
+      // Strict validation for a sync API: no silent type coercion (a JSON
+      // number where a string belongs is a client bug worth a 400, not a
+      // stored "42") and no silent stripping of unknown properties —
+      // `additionalProperties: false` schemas reject them instead. Query
+      // strings therefore validate as strings (see the chat `limit` param).
+      customOptions: { coerceTypes: false, removeAdditional: false },
+    },
   })
 
+  await app.register(errorHandlerPlugin)
   await app.register(verifyAuth, {
     issuer: config.issuer,
     audience: config.audience,
@@ -50,7 +63,10 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     clockSkewSeconds: config.clockSkewSeconds,
     jwksCooldownMs: options.jwksCooldownMs,
   })
+  await app.register(storagePlugin, { dbPath: config.dbPath })
   await app.register(whoamiRoutes)
+  await app.register(projectRoutes)
+  await app.register(chatRoutes)
 
   return app
 }
