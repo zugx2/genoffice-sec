@@ -1,0 +1,12 @@
+# Keep docker build contexts small. The only current context is the repo
+# root (docker/keycloak/docker-compose.yml `backend` service), which needs
+# just the backend service and the shared base tsconfig; everything else is
+# excluded. Later lines win, so the node_modules/dist re-exclusions at the
+# bottom must stay after the ! re-inclusions.
+*
+!tsconfig.base.json
+!services
+!services/backend
+!services/backend/**
+services/backend/node_modules
+services/backend/dist

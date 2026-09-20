@@ -25,3 +25,29 @@ services:
     volumes:
       # Realm import (declarative; skipped automatically if the realm exists).
       - ./realm:/opt/keycloak/data/import:ro
+
+  # GenOffice cloud backend (Phase 4, services/backend). Profile-gated so a
+  # plain `up` stays Keycloak-only; bring it up with
+  # `docker compose --profile backend up -d --build`.
+  backend:
+    build:
+      # Repo root as context so the Dockerfile can copy tsconfig.base.json;
+      # the root .dockerignore keeps the context to this service's files.
+      context: ../..
+      dockerfile: services/backend/Dockerfile
+    profiles: ['backend']
+    environment:
+      GENOFFICE_BACKEND_PORT: '8000'
+      # Listen on all interfaces inside the container (published below).
+      GENOFFICE_BACKEND_HOST: '0.0.0.0'
+      # The iss claim check keeps the host-anchored issuer Keycloak
+      # advertises (KC_HOSTNAME above), but the JWKS is fetched over the
+      # compose network — that is the GENOFFICE_BACKEND_JWKS_URL override
+      # case (services/backend/README.md, "Docker networking").
+      GENOFFICE_BACKEND_ISSUER: 'http://localhost:8080/realms/genoffice'
+      GENOFFICE_BACKEND_JWKS_URL: 'http://keycloak:8080/realms/genoffice/protocol/openid-connect/certs'
+    ports:
+      # Dev config anchor: the shell's DEV_BACKEND_URL expects port 8000.
+      - '8000:8000'
+    depends_on:
+      - keycloak
