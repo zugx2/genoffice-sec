@@ -1004,7 +1004,11 @@ function formatExpiryCountdown(remainingMs: number): string {
  * (a terminal login event drops the waiting state), so no timer leaks.
  */
 function useExpiryCountdown(expiresAt: number | null): number {
-  const [remaining, setRemaining] = useState(0)
+  // lazy init from the deadline: no one-frame 00:00 flash when a pane
+  // mounts with the waiting event already in hand
+  const [remaining, setRemaining] = useState(() =>
+    expiresAt === null ? 0 : expiresAt - Date.now(),
+  )
   useEffect(() => {
     if (expiresAt === null) return
     const tick = (): void => setRemaining(expiresAt - Date.now())
@@ -1027,11 +1031,14 @@ function CloudAccountSection({ t }: { t: TFunc }) {
   const waitingEvent = lastEvent?.status === 'waiting-for-confirmation' ? lastEvent : undefined
   const authenticated = session?.status === 'authenticated'
   // An attempt is pending from the invoke until its terminal event — the
-  // hook's login() promise settles exactly there — and, via the waiting
-  // event, also when this pane mounted mid-attempt (the pending event is
-  // replayed on subscribe). Both keep every login-starting action disabled
-  // so two concurrent auth:login invokes (which double-deliver login
-  // events) cannot happen from this UI.
+  // hook's login() promise settles exactly there — and, once a waiting
+  // event has arrived, while the user confirms it. The pending waiting
+  // event is replayed by the manager on a joining auth:login invoke, not
+  // on useSession's renderer-side subscribe, so a pane remounted
+  // mid-attempt has empty loginEvents (pending=false) until it invokes.
+  // Both states keep every login-starting action disabled; across that
+  // remount window a click then joins the in-flight attempt safely (the
+  // manager single-flights startLogin) instead of double-starting it.
   const pending = starting || waitingEvent !== undefined
 
   const remainingMs = useExpiryCountdown(waitingEvent?.expiresAt ?? null)
@@ -1054,16 +1061,22 @@ function CloudAccountSection({ t }: { t: TFunc }) {
 
   const copyCode = (): void => {
     if (!waitingEvent) return
-    void navigator.clipboard.writeText(waitingEvent.userCode).then(() => {
-      setCodeCopied(true)
-      window.setTimeout(() => setCodeCopied(false), 2000)
-    })
+    void navigator.clipboard
+      .writeText(waitingEvent.userCode)
+      .then(() => {
+        setCodeCopied(true)
+        window.setTimeout(() => setCodeCopied(false), 2000)
+      })
+      .catch(() => {})
   }
 
   const openVerificationPage = (): void => {
-    void window.aiOfficeAuth?.openVerificationPage().then((result) => {
-      setOpenPageFailed(!result.ok)
-    })
+    void window.aiOfficeAuth
+      ?.openVerificationPage()
+      .then((result) => {
+        setOpenPageFailed(!result.ok)
+      })
+      .catch(() => {})
   }
 
   const doLogout = (): void => {

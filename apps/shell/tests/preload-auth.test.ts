@@ -49,7 +49,7 @@ describe('cloud-auth preload bridge', () => {
     ])
   })
 
-  it('invokes the four request channels unchanged', async () => {
+  it('invokes the five request channels unchanged', async () => {
     electronMocks.invoke.mockResolvedValue(undefined)
 
     await authApi.login()
