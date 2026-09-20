@@ -71,3 +71,29 @@ export interface AuthSessionSnapshot {
 export interface AuthSessionChangedPayload {
   status: 'authenticated' | 'anonymous'
 }
+
+/**
+ * The typed bridge the shell preload exposes as `window.aiOfficeAuth`
+ * (docs/cloud-backend-auth.md §C): a thin wrapper over the channels above,
+ * profile only — never tokens, never endpoint URLs. The main process
+ * validates every payload; this layer adds no validation of its own.
+ */
+export interface AuthApi {
+  /**
+   * Start (or join) the device-authorization-grant login. The promise
+   * settles at the terminal event (`success`/`failure`), which also
+   * arrives over `onLoginEvent`; joiners get the pending waiting event
+   * replayed on subscribe.
+   */
+  login(): Promise<void>
+  /** cancel the in-flight login attempt (reports `failure/cancelled`) */
+  cancelLogin(): Promise<void>
+  /** revoke + wipe local credentials + open the issuer's end-session page */
+  logout(): Promise<void>
+  /** current session snapshot (profile only, never tokens) */
+  getSession(): Promise<AuthSessionSnapshot>
+  /** push: login progress over `auth:login-event`; returns the unsubscribe */
+  onLoginEvent(handler: (event: AuthLoginEventPayload) => void): () => void
+  /** push: session appeared/left over `auth:session-changed`; details follow via `getSession()` */
+  onSessionChanged(handler: (payload: AuthSessionChangedPayload) => void): () => void
+}

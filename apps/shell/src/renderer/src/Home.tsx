@@ -19,6 +19,7 @@ import type {
   RecentEntry,
 } from '../../shared/home-api'
 import type { IntegrationsApi } from '../../shared/integrations-api'
+import type { AuthApi } from '../../shared/auth-api'
 import { useDismissablePopover } from '@genoffice/ui'
 import { fileCountKey, visiblePageCount } from './counts'
 import { useI18n } from './locale'
@@ -30,6 +31,8 @@ declare global {
   interface Window {
     aiOffice: HomeApi
     aiOfficeIntegrations?: IntegrationsApi
+    /** cloud-auth bridge (profile only, never tokens); optional in tests */
+    aiOfficeAuth?: AuthApi
   }
 }
 

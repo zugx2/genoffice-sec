@@ -9,6 +9,7 @@ import {
 import type { AiSettings, CodexModelCatalog } from '@genoffice/ai-provider/browser'
 import { installDropOpenBridge } from '@genoffice/electron-utils/drop-open'
 import { normalizeAiPanelPrefs } from '@genoffice/ui/ai-panel-prefs'
+import type { SessionApi } from '@genoffice/ui'
 import type {
   AccountLoginEvent,
   AccountStatus,
@@ -23,6 +24,13 @@ import type {
   UiLanguage,
 } from '../shared/home-api'
 import { HOME_CHANNELS } from '../shared/home-api'
+import { AUTH_CHANNELS } from '../shared/auth-api'
+import type {
+  AuthApi,
+  AuthLoginEventPayload,
+  AuthSessionChangedPayload,
+  AuthSessionSnapshot,
+} from '../shared/auth-api'
 import { INTEGRATIONS_CHANNELS } from '../shared/integrations-api'
 import type {
   IntegrationsApi,
@@ -512,6 +520,33 @@ const tabsApi: TabsApi = {
 }
 
 contextBridge.exposeInMainWorld('aiOfficeTabs', tabsApi)
+
+// cloud-auth bridge (docs/cloud-backend-auth.md §C): profile only, never
+// tokens or endpoint URLs — the main process validates every payload. The
+// intersection with @genoffice/ui's structural mirror (SessionApi) keeps
+// the bridge consumable by useSession(); a drift between the two shapes
+// fails this file's typecheck.
+const authApi: AuthApi & SessionApi = {
+  login: () => ipcRenderer.invoke(AUTH_CHANNELS.login),
+  cancelLogin: () => ipcRenderer.invoke(AUTH_CHANNELS.cancelLogin),
+  logout: () => ipcRenderer.invoke(AUTH_CHANNELS.logout),
+  async getSession() {
+    return (await ipcRenderer.invoke(AUTH_CHANNELS.getSession)) as AuthSessionSnapshot
+  },
+  onLoginEvent(handler) {
+    const listener = (_event: IpcRendererEvent, payload: AuthLoginEventPayload) => handler(payload)
+    ipcRenderer.on(AUTH_CHANNELS.loginEvent, listener)
+    return () => ipcRenderer.removeListener(AUTH_CHANNELS.loginEvent, listener)
+  },
+  onSessionChanged(handler) {
+    const listener = (_event: IpcRendererEvent, payload: AuthSessionChangedPayload) =>
+      handler(payload)
+    ipcRenderer.on(AUTH_CHANNELS.sessionChanged, listener)
+    return () => ipcRenderer.removeListener(AUTH_CHANNELS.sessionChanged, listener)
+  },
+}
+
+contextBridge.exposeInMainWorld('aiOfficeAuth', authApi)
 
 // open documents dragged from the OS anywhere over Home or the tab strip
 installDropOpenBridge()

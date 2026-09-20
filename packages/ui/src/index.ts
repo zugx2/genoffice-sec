@@ -95,3 +95,13 @@ export {
   type AutoSaveDefault,
   type AutoSaveDefaultApi,
 } from './auto-save-pref'
+export {
+  useSession,
+  type SessionApi,
+  type SessionChangedEvent,
+  type SessionLoginEvent,
+  type SessionProfile,
+  type SessionSnapshot,
+  type SessionStorageKind,
+  type UseSessionResult,
+} from './session'
