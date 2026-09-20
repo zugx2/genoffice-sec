@@ -6,7 +6,8 @@
  * - restore the persisted session at startup (validating the stored id
  *   token's iss/aud/sub and the stored issuer before refreshing);
  * - drive device-flow logins, auto-opening the verification page through
- *   the origin-checked external-URL gate, and reporting progress as login
+ *   the origin-checked external-URL gate (re-openable on request while the
+ *   attempt is in flight), and reporting progress as login
  *   events that never carry a URL or token;
  * - keep a proactive refresh timer armed at `exp − 30s` (min 5 s from now,
  *   re-armed after every refresh, cleared on logout, short retry backoff
@@ -30,6 +31,7 @@ import {
 import { safeExternalUrl } from '@genoffice/electron-utils'
 import type {
   AuthLoginEventPayload,
+  AuthOpenVerificationPageResult,
   AuthSessionChangedPayload,
   AuthSessionProfile,
   AuthSessionSnapshot,
@@ -128,7 +130,14 @@ export class AuthSessionManager {
    * that join after it was emitted, so a late `auth:login` caller still
    * learns the user code it must display.
    */
-  private pendingLoginEvent: AuthLoginEventPayload | undefined
+  private pendingLoginEvent:
+    Extract<AuthLoginEventPayload, { status: 'waiting-for-confirmation' }> | undefined
+  /**
+   * Verification URL of the in-flight attempt (main-process-only data — it
+   * never crosses to the renderer). Kept next to the pending waiting event
+   * so `openVerificationPage()` can re-open it through the origin gate.
+   */
+  private pendingVerificationUrl: string | undefined
 
   private readonly loginEventListeners = new Set<(payload: AuthLoginEventPayload) => void>()
   private readonly sessionChangedListeners = new Set<(payload: AuthSessionChangedPayload) => void>()
@@ -212,7 +221,9 @@ export class AuthSessionManager {
   private async runLogin(): Promise<void> {
     try {
       const handle = await this.orchestrator.startLogin()
-      this.openIssuerUrl(handle.verificationUriComplete ?? handle.verificationUri)
+      const verificationUrl = handle.verificationUriComplete ?? handle.verificationUri
+      this.pendingVerificationUrl = verificationUrl
+      this.openIssuerUrl(verificationUrl)
       this.emitLoginEvent({
         status: 'waiting-for-confirmation',
         userCode: handle.userCode,
@@ -234,6 +245,26 @@ export class AuthSessionManager {
   /** Cancel the in-flight login; its pipeline reports `failure/cancelled`. */
   cancelLogin(): void {
     this.orchestrator.cancelLogin()
+  }
+
+  /**
+   * Re-open the in-flight login's verification page — the rescue action for
+   * when the auto-open never reached the browser. The URL is re-derived from
+   * the in-flight attempt (it never crossed to the renderer) and passes the
+   * same origin-checked gate as the auto-open. A typed error comes back when
+   * no attempt is in flight or its user code already expired.
+   */
+  openVerificationPage(): AuthOpenVerificationPageResult {
+    const pending = this.pendingLoginEvent
+    if (
+      pending === undefined ||
+      this.pendingVerificationUrl === undefined ||
+      this.now() >= pending.expiresAt
+    ) {
+      return { ok: false, error: 'no-login-in-flight' }
+    }
+    this.openIssuerUrl(this.pendingVerificationUrl)
+    return { ok: true }
   }
 
   /**
@@ -383,9 +414,15 @@ export class AuthSessionManager {
   }
 
   private emitLoginEvent(payload: AuthLoginEventPayload): void {
-    // keep the join-replay cache in step: waiting state is replayable, a
-    // terminal event ends the attempt and must not be replayed
-    this.pendingLoginEvent = payload.status === 'waiting-for-confirmation' ? payload : undefined
+    // keep the join-replay cache in step: waiting state is replayable (and
+    // its verification URL re-openable), a terminal event ends the attempt
+    // and must not be replayed
+    if (payload.status === 'waiting-for-confirmation') {
+      this.pendingLoginEvent = payload
+    } else {
+      this.pendingLoginEvent = undefined
+      this.pendingVerificationUrl = undefined
+    }
     for (const listener of [...this.loginEventListeners]) {
       try {
         listener(payload)

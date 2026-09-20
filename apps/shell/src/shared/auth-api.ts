@@ -23,6 +23,8 @@ export const AUTH_CHANNELS = {
   loginEvent: 'auth:login-event',
   /** push: broadcast to every webContents when the session appears/leaves */
   sessionChanged: 'auth:session-changed',
+  /** re-open the in-flight login's verification page (main-side URL only) */
+  openVerificationPage: 'auth:open-verification-page',
 } as const
 
 /**
@@ -73,6 +75,15 @@ export interface AuthSessionChangedPayload {
 }
 
 /**
+ * Response of `auth:open-verification-page`. The failure code covers both
+ * "no login attempt is in flight" and "its user code already expired" —
+ * either way there is nothing left to re-open and the pane re-offers login.
+ */
+export type AuthOpenVerificationPageResult =
+  /** the page opened through the origin-checked external-URL gate */
+  { ok: true } | { ok: false; error: 'no-login-in-flight' }
+
+/**
  * The typed bridge the shell preload exposes as `window.aiOfficeAuth`
  * (docs/cloud-backend-auth.md §C): a thin wrapper over the channels above,
  * profile only — never tokens, never endpoint URLs. The main process
@@ -96,4 +107,11 @@ export interface AuthApi {
   onLoginEvent(handler: (event: AuthLoginEventPayload) => void): () => void
   /** push: session appeared/left over `auth:session-changed`; details follow via `getSession()` */
   onSessionChanged(handler: (payload: AuthSessionChangedPayload) => void): () => void
+  /**
+   * Re-open the in-flight login's verification page in the system browser —
+   * the rescue action when the auto-open never reached it. The URL is
+   * re-derived main-side and never crosses to the renderer; a typed error
+   * comes back when no unexpired attempt is in flight.
+   */
+  openVerificationPage(): Promise<AuthOpenVerificationPageResult>
 }

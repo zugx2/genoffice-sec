@@ -28,6 +28,7 @@ import { AUTH_CHANNELS } from '../shared/auth-api'
 import type {
   AuthApi,
   AuthLoginEventPayload,
+  AuthOpenVerificationPageResult,
   AuthSessionChangedPayload,
   AuthSessionSnapshot,
 } from '../shared/auth-api'
@@ -543,6 +544,11 @@ const authApi: AuthApi & SessionApi = {
       handler(payload)
     ipcRenderer.on(AUTH_CHANNELS.sessionChanged, listener)
     return () => ipcRenderer.removeListener(AUTH_CHANNELS.sessionChanged, listener)
+  },
+  async openVerificationPage() {
+    return (await ipcRenderer.invoke(
+      AUTH_CHANNELS.openVerificationPage,
+    )) as AuthOpenVerificationPageResult
   },
 }
 

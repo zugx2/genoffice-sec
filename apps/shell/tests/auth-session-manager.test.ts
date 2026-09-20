@@ -291,6 +291,105 @@ describe('AuthSessionManager login lifecycle', () => {
   })
 })
 
+describe('AuthSessionManager.openVerificationPage', () => {
+  it('re-opens the in-flight login’s verification URL through the same gate', async () => {
+    const gatedSleep = (): Promise<void> => new Promise(() => {}) // park the poller
+    const fetchFn = issuerFetch({
+      [DISCOVERY_URL]: discovery,
+      [DEVICE_ENDPOINT]: deviceAuth,
+      [TOKEN_ENDPOINT]: authorizationPending,
+    })
+    const harness = makeHarness({ fetchFn, sleep: gatedSleep, now: () => START_AT })
+
+    const login = harness.manager.startLogin()
+    await vi.waitFor(() => expect(harness.loginEvents[0]?.status).toBe('waiting-for-confirmation'))
+    expect(harness.opened).toEqual([VERIFICATION_URI_COMPLETE]) // the auto-open
+
+    expect(harness.manager.openVerificationPage()).toEqual({ ok: true })
+    expect(harness.opened).toEqual([VERIFICATION_URI_COMPLETE, VERIFICATION_URI_COMPLETE])
+
+    harness.manager.cancelLogin() // settle the parked attempt
+    await login
+  })
+
+  it('returns the typed error when no login is in flight (before and after an attempt)', async () => {
+    const fetchFn = issuerFetch({
+      [DISCOVERY_URL]: discovery,
+      [DEVICE_ENDPOINT]: deviceAuth,
+      [TOKEN_ENDPOINT]: tokenSuccess,
+    })
+    const harness = makeHarness({ fetchFn, sleep: instantSleep, now: () => START_AT })
+
+    expect(harness.manager.openVerificationPage()).toEqual({
+      ok: false,
+      error: 'no-login-in-flight',
+    })
+    expect(harness.opened).toEqual([])
+
+    await harness.manager.startLogin() // terminal event reached
+    expect(harness.manager.openVerificationPage()).toEqual({
+      ok: false,
+      error: 'no-login-in-flight',
+    })
+    expect(harness.opened).toEqual([VERIFICATION_URI_COMPLETE]) // only the auto-open
+  })
+
+  it('returns the typed error once the user code expired, without opening anything', async () => {
+    const gatedSleep = (): Promise<void> => new Promise(() => {}) // park the poller
+    let clock = START_AT
+    const fetchFn = issuerFetch({
+      [DISCOVERY_URL]: discovery,
+      [DEVICE_ENDPOINT]: deviceAuth,
+      [TOKEN_ENDPOINT]: authorizationPending,
+    })
+    const harness = makeHarness({ fetchFn, sleep: gatedSleep, now: () => clock })
+
+    const login = harness.manager.startLogin()
+    await vi.waitFor(() => expect(harness.loginEvents[0]?.status).toBe('waiting-for-confirmation'))
+
+    // expires_in 600 → the code is dead at START_AT + 600s
+    clock = START_AT + 600_001
+    expect(harness.manager.openVerificationPage()).toEqual({
+      ok: false,
+      error: 'no-login-in-flight',
+    })
+    expect(harness.opened).toEqual([VERIFICATION_URI_COMPLETE]) // only the auto-open
+
+    harness.manager.cancelLogin() // settle the parked attempt
+    await login
+  })
+
+  it('drops a re-open whose verification URL left the issuer origin (same as the auto-open)', async () => {
+    const gatedSleep = (): Promise<void> => new Promise(() => {}) // park the poller
+    const fetchFn = issuerFetch({
+      [DISCOVERY_URL]: discovery,
+      [DEVICE_ENDPOINT]: () =>
+        jsonResponse(
+          JSON.stringify({
+            device_code: 'device-code-1',
+            user_code: 'ABCD-EFGH',
+            verification_uri: 'https://evil.example/device',
+            verification_uri_complete: 'https://evil.example/device?user_code=ABCD-EFGH',
+            expires_in: 600,
+            interval: 5,
+          }),
+        ),
+      [TOKEN_ENDPOINT]: authorizationPending,
+    })
+    const harness = makeHarness({ fetchFn, sleep: gatedSleep, now: () => START_AT })
+
+    const login = harness.manager.startLogin()
+    await vi.waitFor(() => expect(harness.loginEvents[0]?.status).toBe('waiting-for-confirmation'))
+    expect(harness.opened).toEqual([]) // the auto-open was gated
+
+    expect(harness.manager.openVerificationPage()).toEqual({ ok: true })
+    expect(harness.opened).toEqual([]) // and so is the re-open
+
+    harness.manager.cancelLogin() // settle the parked attempt
+    await login
+  })
+})
+
 describe('AuthSessionManager refresh timer', () => {
   it('refreshes at exp − 30s without broadcasting a session change', async () => {
     vi.useFakeTimers()

@@ -1,7 +1,7 @@
 /**
  * Cloud-auth IPC registration (docs/cloud-backend-auth.md §B).
  *
- * Six channels, every payload zod-validated at this edge (the sheets IPC
+ * Seven channels, every payload zod-validated at this edge (the sheets IPC
  * precedent — outgoing pushes and responses are validated too, so a shape
  * bug fails loudly instead of drifting to the renderer):
  *
@@ -9,7 +9,10 @@
  *   over `auth:login-event` to the requesting webContents only;
  * - `auth:cancel-login` / `auth:logout` / `auth:get-session`;
  * - `auth:login-event` — push, `{status, userCode?, expiresAt?, error?}`;
- * - `auth:session-changed` — push, broadcast to every webContents.
+ * - `auth:session-changed` — push, broadcast to every webContents;
+ * - `auth:open-verification-page` — re-open the in-flight login's
+ *   verification page; the URL stays main-side (typed error when no
+ *   unexpired attempt is in flight).
  *
  * The renderer never receives tokens or endpoint URLs through these
  * channels; external pages open only in the main process through
@@ -73,7 +76,12 @@ const sessionChangedSchema = z
   })
   .strict()
 
-/** The four request channels take no arguments; anything else is rejected. */
+const openVerificationPageResultSchema = z.union([
+  z.object({ ok: z.literal(true) }).strict(),
+  z.object({ ok: z.literal(false), error: z.literal('no-login-in-flight') }).strict(),
+])
+
+/** The five request channels take no arguments; anything else is rejected. */
 const noArguments = z.union([z.undefined(), z.null()])
 
 let sessionManager: AuthSessionManager | undefined
@@ -141,6 +149,15 @@ export function registerAuthIpc(deps: AuthIpcDeps = {}): void {
   ipcMain.handle(AUTH_CHANNELS.getSession, (_event, input: unknown): AuthSessionSnapshot => {
     noArguments.parse(input)
     return sessionSnapshotSchema.parse(manager.snapshot())
+  })
+
+  // the rescue action for a verification page that never reached the
+  // browser: the URL is re-derived from the in-flight attempt main-side and
+  // opened through the same origin-checked gate as the auto-open — it never
+  // crosses to the renderer, only the typed result below does
+  ipcMain.handle(AUTH_CHANNELS.openVerificationPage, (_event, input: unknown) => {
+    noArguments.parse(input)
+    return openVerificationPageResultSchema.parse(manager.openVerificationPage())
   })
 }
 

@@ -36,7 +36,7 @@ beforeEach(() => {
 })
 
 describe('cloud-auth preload bridge', () => {
-  it('exposes exactly the six auth methods and nothing else', () => {
+  it('exposes exactly the seven auth methods and nothing else', () => {
     expect(authApi).toBeTruthy()
     expect(Object.keys(authApi).sort()).toEqual([
       'cancelLogin',
@@ -45,6 +45,7 @@ describe('cloud-auth preload bridge', () => {
       'logout',
       'onLoginEvent',
       'onSessionChanged',
+      'openVerificationPage',
     ])
   })
 
@@ -71,6 +72,17 @@ describe('cloud-auth preload bridge', () => {
 
     await expect(authApi.getSession()).resolves.toEqual(snapshot)
     expect(electronMocks.invoke).toHaveBeenLastCalledWith(AUTH_CHANNELS.getSession)
+  })
+
+  it('returns the typed result from auth:open-verification-page', async () => {
+    const stale = { ok: false, error: 'no-login-in-flight' }
+    electronMocks.invoke.mockResolvedValue(stale)
+
+    await expect(authApi.openVerificationPage()).resolves.toEqual(stale)
+    expect(electronMocks.invoke).toHaveBeenLastCalledWith(AUTH_CHANNELS.openVerificationPage)
+
+    electronMocks.invoke.mockResolvedValue({ ok: true })
+    await expect(authApi.openVerificationPage()).resolves.toEqual({ ok: true })
   })
 
   it('forwards login events to the handler and unsubscribes with the same listener', () => {
