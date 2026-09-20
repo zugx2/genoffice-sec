@@ -118,11 +118,17 @@ export class AuthSessionManager {
   private current: AuthSession | undefined
   private refreshTimer: NodeJS.Timeout | undefined
   /**
-   * True while login-progress events are wired for the in-flight attempt.
-   * The orchestrator already single-flights the attempt itself; the flag
-   * keeps a joining `startLogin()` from wiring a second emit pipeline.
+   * The in-flight login pipeline. The orchestrator already single-flights
+   * the attempt itself; keeping its promise here makes a joining
+   * `startLogin()` await the same terminal result as the first caller.
    */
-  private loginEventsWired = false
+  private loginRun: Promise<void> | undefined
+  /**
+   * The waiting event of the in-flight attempt — replayed to subscribers
+   * that join after it was emitted, so a late `auth:login` caller still
+   * learns the user code it must display.
+   */
+  private pendingLoginEvent: AuthLoginEventPayload | undefined
 
   private readonly loginEventListeners = new Set<(payload: AuthLoginEventPayload) => void>()
   private readonly sessionChangedListeners = new Set<(payload: AuthSessionChangedPayload) => void>()
@@ -154,6 +160,16 @@ export class AuthSessionManager {
   /** Subscribe to login progress; returns the unsubscribe. */
   onLoginEvent(listener: (payload: AuthLoginEventPayload) => void): () => void {
     this.loginEventListeners.add(listener)
+    // a subscriber that joins mid-attempt (a second `auth:login` caller)
+    // missed the waiting event — replay it once, to this listener only
+    if (this.pendingLoginEvent !== undefined) {
+      const pending = this.pendingLoginEvent
+      try {
+        listener(pending)
+      } catch (error) {
+        console.warn('[auth] login-event listener failed:', error)
+      }
+    }
     return () => this.loginEventListeners.delete(listener)
   }
 
@@ -178,38 +194,41 @@ export class AuthSessionManager {
    * Start (or join) the device-flow login. The verification page opens in
    * the system browser as soon as the device authorization response
    * arrives — design flow step 3 — and the renderer learns only the user
-   * code and expiry.
+   * code and expiry. A joining caller awaits the same pipeline, so the
+   * promise always settles at the terminal event (success/failure) — and
+   * the pending waiting event is replayed to its subscription on join.
    */
   startLogin(): Promise<void> {
-    if (this.loginEventsWired) return Promise.resolve()
-    this.loginEventsWired = true
-    const unwire = (): void => {
-      this.loginEventsWired = false
-    }
-    return (async (): Promise<void> => {
+    if (this.loginRun !== undefined) return this.loginRun
+    const run = this.runLogin()
+    this.loginRun = run
+    // runLogin never rejects (every failure becomes a login event)
+    void run.then(() => {
+      if (this.loginRun === run) this.loginRun = undefined
+    })
+    return run
+  }
+
+  private async runLogin(): Promise<void> {
+    try {
+      const handle = await this.orchestrator.startLogin()
+      this.openIssuerUrl(handle.verificationUriComplete ?? handle.verificationUri)
+      this.emitLoginEvent({
+        status: 'waiting-for-confirmation',
+        userCode: handle.userCode,
+        expiresAt: handle.expiresAt,
+      })
       try {
-        const handle = await this.orchestrator.startLogin()
-        this.openIssuerUrl(handle.verificationUriComplete ?? handle.verificationUri)
-        this.emitLoginEvent({
-          status: 'waiting-for-confirmation',
-          userCode: handle.userCode,
-          expiresAt: handle.expiresAt,
-        })
-        try {
-          this.adopt(await handle.tokens)
-          this.emitLoginEvent({ status: 'success' })
-          this.emitSessionChanged()
-        } catch (error) {
-          this.emitLoginEvent({ status: 'failure', error: authErrorCode(error) })
-        } finally {
-          unwire()
-        }
+        this.adopt(await handle.tokens)
+        this.emitLoginEvent({ status: 'success' })
+        this.emitSessionChanged()
       } catch (error) {
-        // pre-poll failure (discovery / device authorization): no handle ever
         this.emitLoginEvent({ status: 'failure', error: authErrorCode(error) })
-        unwire()
       }
-    })()
+    } catch (error) {
+      // pre-poll failure (discovery / device authorization): no handle ever
+      this.emitLoginEvent({ status: 'failure', error: authErrorCode(error) })
+    }
   }
 
   /** Cancel the in-flight login; its pipeline reports `failure/cancelled`. */
@@ -364,6 +383,9 @@ export class AuthSessionManager {
   }
 
   private emitLoginEvent(payload: AuthLoginEventPayload): void {
+    // keep the join-replay cache in step: waiting state is replayable, a
+    // terminal event ends the attempt and must not be replayed
+    this.pendingLoginEvent = payload.status === 'waiting-for-confirmation' ? payload : undefined
     for (const listener of [...this.loginEventListeners]) {
       try {
         listener(payload)

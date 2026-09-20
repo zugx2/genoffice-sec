@@ -182,6 +182,50 @@ describe('AuthSessionManager login lifecycle', () => {
     })
   })
 
+  it('replays the pending waiting event to joiners, who await the same terminal', async () => {
+    const sleepResolvers: Array<() => void> = []
+    const gatedSleep = (): Promise<void> =>
+      new Promise((resolve) => {
+        sleepResolvers.push(resolve)
+      })
+    const releaseSleeps = (): void => {
+      sleepResolvers.splice(0).forEach((resolve) => resolve())
+    }
+    let deviceApproved = false
+    const fetchFn = issuerFetch({
+      [DISCOVERY_URL]: discovery,
+      [DEVICE_ENDPOINT]: deviceAuth,
+      [TOKEN_ENDPOINT]: () => (deviceApproved ? tokenSuccess() : authorizationPending()),
+    })
+    const harness = makeHarness({ fetchFn, sleep: gatedSleep, now: () => START_AT })
+
+    const first = harness.manager.startLogin()
+    await vi.waitFor(() => expect(harness.loginEvents[0]?.status).toBe('waiting-for-confirmation'))
+
+    // a second party joins mid-attempt (the ipc `auth:login` join path:
+    // subscribe first, then call startLogin)
+    const joinerEvents: AuthLoginEventPayload[] = []
+    harness.manager.onLoginEvent((payload) => joinerEvents.push(payload))
+    const joined = harness.manager.startLogin()
+
+    // the joiner immediately recovers the user code it must display…
+    expect(joinerEvents).toEqual([
+      { status: 'waiting-for-confirmation', userCode: 'ABCD-EFGH', expiresAt: START_AT + 600_000 },
+    ])
+    // …without starting a second device flow
+    expect(fetchFn.calls.filter((url) => url === DEVICE_ENDPOINT)).toHaveLength(1)
+
+    deviceApproved = true
+    releaseSleeps()
+    await Promise.all([first, joined])
+
+    expect(joinerEvents.at(-1)).toEqual({ status: 'success' })
+    expect(harness.loginEvents).toEqual([
+      { status: 'waiting-for-confirmation', userCode: 'ABCD-EFGH', expiresAt: START_AT + 600_000 },
+      { status: 'success' },
+    ])
+  })
+
   it('refuses to open a verification URL outside the issuer origin', async () => {
     const fetchFn = issuerFetch({
       [DISCOVERY_URL]: discovery,

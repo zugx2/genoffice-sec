@@ -112,15 +112,19 @@ export function registerAuthIpc(deps: AuthIpcDeps = {}): void {
     noArguments.parse(input)
     await waitForProxy()
     // progress streams to the requesting webContents; the subscription ends
-    // with the terminal event (success/failure) or a destroyed sender
+    // with the terminal event (success/failure) or a destroyed sender. A
+    // joining caller (login already in flight) gets the pending waiting
+    // event replayed synchronously on subscribe — before `unsubscribe` is
+    // assigned — so it is declared up front instead of via `const`.
     const sender = event.sender
+    let unsubscribe = (): void => {}
     const forward = (payload: AuthLoginEventPayload): void => {
       if (!sender.isDestroyed()) {
         sender.send(AUTH_CHANNELS.loginEvent, loginEventSchema.parse(payload))
       }
       if (payload.status !== 'waiting-for-confirmation' || sender.isDestroyed()) unsubscribe()
     }
-    const unsubscribe = manager.onLoginEvent(forward)
+    unsubscribe = manager.onLoginEvent(forward)
     return manager.startLogin()
   })
 
