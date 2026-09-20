@@ -1,7 +1,7 @@
 /**
  * Cloud-auth IPC registration (docs/cloud-backend-auth.md §B).
  *
- * Seven channels, every payload zod-validated at this edge (the sheets IPC
+ * Eight channels, every payload zod-validated at this edge (the sheets IPC
  * precedent — outgoing pushes and responses are validated too, so a shape
  * bug fails loudly instead of drifting to the renderer):
  *
@@ -12,7 +12,9 @@
  * - `auth:session-changed` — push, broadcast to every webContents;
  * - `auth:open-verification-page` — re-open the in-flight login's
  *   verification page; the URL stays main-side (typed error when no
- *   unexpired attempt is in flight).
+ *   unexpired attempt is in flight);
+ * - `auth:probe-backend` — on-demand whoami probe through the backend
+ *   client; the renderer sees `{ok, status?}` only.
  *
  * The renderer never receives tokens or endpoint URLs through these
  * channels; external pages open only in the main process through
@@ -22,11 +24,13 @@
 import { join } from 'node:path'
 import { app, ipcMain, safeStorage, shell, webContents } from 'electron'
 import { z } from 'zod'
+import { BackendClient } from './backend-client'
 import { getShellAuthConfig } from './config'
 import { AuthSessionManager } from './session-manager'
 import { ElectronTokenStore } from './token-store-electron'
 import {
   AUTH_CHANNELS,
+  type AuthBackendProbeResult,
   type AuthLoginEventPayload,
   type AuthSessionSnapshot,
 } from '../../shared/auth-api'
@@ -81,7 +85,14 @@ const openVerificationPageResultSchema = z.union([
   z.object({ ok: z.literal(false), error: z.literal('no-login-in-flight') }).strict(),
 ])
 
-/** The five request channels take no arguments; anything else is rejected. */
+const backendProbeResultSchema = z
+  .object({
+    ok: z.boolean(),
+    status: z.number().int().min(100).max(599).optional(),
+  })
+  .strict()
+
+/** The six request channels take no arguments; anything else is rejected. */
 const noArguments = z.union([z.undefined(), z.null()])
 
 let sessionManager: AuthSessionManager | undefined
@@ -106,6 +117,17 @@ export function registerAuthIpc(deps: AuthIpcDeps = {}): void {
     },
   })
   sessionManager = manager
+
+  // Backend client (Phase 5): construction SSRF-gates the configured base
+  // URL once and is lazy — the app starts fine with a misconfigured URL,
+  // every probe just answers not-connected. The token seam is the session
+  // manager; transport is the plain proxy-installed global fetch.
+  let backendClient: Promise<BackendClient> | undefined
+  const backend = (): Promise<BackendClient> =>
+    (backendClient ??= BackendClient.create({
+      baseUrl: config.backendUrl,
+      session: manager,
+    }))
 
   // session changes go to every webContents (home tab, editor tabs): the
   // session drives shared chrome, not just the pane that triggered it
@@ -158,6 +180,22 @@ export function registerAuthIpc(deps: AuthIpcDeps = {}): void {
   ipcMain.handle(AUTH_CHANNELS.openVerificationPage, (_event, input: unknown) => {
     noArguments.parse(input)
     return openVerificationPageResultSchema.parse(manager.openVerificationPage())
+  })
+
+  // the account pane's connection line: one on-demand whoami probe through
+  // the backend client (Bearer attach, refresh-once-on-401). The renderer
+  // learns `{ok, status?}` and nothing else — a construction failure or a
+  // transport error reads as not connected, with details logged main-side
+  ipcMain.handle(AUTH_CHANNELS.probeBackend, async (_event, input: unknown) => {
+    noArguments.parse(input)
+    await waitForProxy()
+    const result: AuthBackendProbeResult = await backend()
+      .then((client) => client.probe())
+      .catch((error: unknown) => {
+        console.warn('[auth] backend probe failed:', error)
+        return { ok: false }
+      })
+    return backendProbeResultSchema.parse(result)
   })
 }
 

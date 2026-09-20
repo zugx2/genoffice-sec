@@ -93,6 +93,36 @@ describe('isSafeRemoteUrl', () => {
   })
 })
 
+describe('isSafeRemoteUrl with allowPrivateHosts (operator-configured targets)', () => {
+  const operator = { allowPrivateHosts: true }
+
+  it.each([
+    'http://localhost:8000/whoami',
+    'http://127.0.0.1:8000/whoami',
+    'http://[::1]:8000/whoami',
+    'http://10.0.0.5:8000/whoami',
+    'http://metadata.internal/api',
+    'http://printer.local/api',
+  ])('allows non-public target %s', async (url) => {
+    await expect(isSafeRemoteUrl(url, operator)).resolves.toBe(true)
+  })
+
+  it.each(['file:///etc/passwd', 'ftp://example.com/x.png', 'not a url', 42])(
+    'still rejects a non-http(s)/malformed value %s',
+    async (url) => {
+      await expect(isSafeRemoteUrl(url, operator)).resolves.toBe(false)
+    },
+  )
+
+  it('never resolves hostnames — an unresolvable name is still accepted', async () => {
+    // shape rules only: a config hostname must not depend on resolution at
+    // validation time (VPN not up yet); the request itself surfaces failures
+    await expect(
+      isSafeRemoteUrl('http://backend.invalid-tld-example:8000', operator),
+    ).resolves.toBe(true)
+  })
+})
+
 describe('fetchWithSsrfGuard', () => {
   const res = (status: number, location?: string) =>
     new Response(null, {

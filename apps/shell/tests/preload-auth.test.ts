@@ -36,7 +36,7 @@ beforeEach(() => {
 })
 
 describe('cloud-auth preload bridge', () => {
-  it('exposes exactly the seven auth methods and nothing else', () => {
+  it('exposes exactly the eight auth methods and nothing else', () => {
     expect(authApi).toBeTruthy()
     expect(Object.keys(authApi).sort()).toEqual([
       'cancelLogin',
@@ -46,10 +46,11 @@ describe('cloud-auth preload bridge', () => {
       'onLoginEvent',
       'onSessionChanged',
       'openVerificationPage',
+      'probeBackend',
     ])
   })
 
-  it('invokes the five request channels unchanged', async () => {
+  it('invokes the six request channels unchanged', async () => {
     electronMocks.invoke.mockResolvedValue(undefined)
 
     await authApi.login()
@@ -83,6 +84,19 @@ describe('cloud-auth preload bridge', () => {
 
     electronMocks.invoke.mockResolvedValue({ ok: true })
     await expect(authApi.openVerificationPage()).resolves.toEqual({ ok: true })
+  })
+
+  it('returns the {ok, status?} result from auth:probe-backend', async () => {
+    const offline = { ok: false, status: 401 }
+    electronMocks.invoke.mockResolvedValue(offline)
+    await expect(authApi.probeBackend()).resolves.toEqual(offline)
+    expect(electronMocks.invoke).toHaveBeenLastCalledWith(AUTH_CHANNELS.probeBackend)
+
+    electronMocks.invoke.mockResolvedValue({ ok: true, status: 200 })
+    await expect(authApi.probeBackend()).resolves.toEqual({ ok: true, status: 200 })
+
+    electronMocks.invoke.mockResolvedValue({ ok: false })
+    await expect(authApi.probeBackend()).resolves.toEqual({ ok: false })
   })
 
   it('forwards login events to the handler and unsubscribes with the same listener', () => {

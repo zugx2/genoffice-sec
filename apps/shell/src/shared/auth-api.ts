@@ -25,6 +25,8 @@ export const AUTH_CHANNELS = {
   sessionChanged: 'auth:session-changed',
   /** re-open the in-flight login's verification page (main-side URL only) */
   openVerificationPage: 'auth:open-verification-page',
+  /** on-demand backend connectivity probe (`GET /whoami`); `{ok, status?}` only */
+  probeBackend: 'auth:probe-backend',
 } as const
 
 /**
@@ -84,6 +86,18 @@ export type AuthOpenVerificationPageResult =
   { ok: true } | { ok: false; error: 'no-login-in-flight' }
 
 /**
+ * Response of `auth:probe-backend`: the whoami probe verdict for the account
+ * pane's connection line. `status` is the backend's HTTP status when it
+ * answered (a `whoami` that answered with a non-2xx is `ok:false` plus that
+ * status); a network failure, a logged-out session, or a config-gated client
+ * is `ok:false` with no status. No URL, token, or body ever crosses.
+ */
+export interface AuthBackendProbeResult {
+  ok: boolean
+  status?: number
+}
+
+/**
  * The typed bridge the shell preload exposes as `window.aiOfficeAuth`
  * (docs/cloud-backend-auth.md §C): a thin wrapper over the channels above,
  * profile only — never tokens, never endpoint URLs. The main process
@@ -114,4 +128,10 @@ export interface AuthApi {
    * comes back when no unexpired attempt is in flight.
    */
   openVerificationPage(): Promise<AuthOpenVerificationPageResult>
+  /**
+   * On-demand backend connectivity probe: one authenticated `GET /whoami`
+   * from the main process. The result is `{ok, status?}` only — never a URL,
+   * token, or response body.
+   */
+  probeBackend(): Promise<AuthBackendProbeResult>
 }

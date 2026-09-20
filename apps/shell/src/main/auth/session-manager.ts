@@ -12,6 +12,9 @@
  * - keep a proactive refresh timer armed at `exp − 30s` (min 5 s from now,
  *   re-armed after every refresh, cleared on logout, short retry backoff
  *   on transient network failures);
+ * - serve main-process callers a currently-valid access token
+ *   (`getAccessToken`, Phase 5's backend client being the first consumer)
+ *   through the same single-flight refresh as the proactive timer;
  * - broadcast session-changed whenever the session appears or leaves.
  *
  * Electron-free by injection (clock and browser opener are seams), so the
@@ -20,6 +23,7 @@
 
 import {
   AuthError,
+  AuthFlowError,
   AuthOrchestrator,
   decodeJwt,
   validateIdToken,
@@ -126,6 +130,15 @@ export class AuthSessionManager {
    */
   private loginRun: Promise<void> | undefined
   /**
+   * The in-flight refresh pipeline shared by the proactive timer and every
+   * `getAccessToken()` caller (forced or expiry-driven). The orchestrator
+   * single-flights the token request itself; this slot additionally
+   * single-flights the adopt/wipe/broadcast handling around it, so N
+   * concurrent callers mint one request and — on a dead refresh token —
+   * one wipe and one session-changed broadcast.
+   */
+  private refreshRun: Promise<AuthSession> | undefined
+  /**
    * The waiting event of the in-flight attempt — replayed to subscribers
    * that join after it was emitted, so a late `auth:login` caller still
    * learns the user code it must display.
@@ -197,6 +210,46 @@ export class AuthSessionManager {
           profile: profileOf(this.current),
           storage: this.storageKind(),
         }
+  }
+
+  /**
+   * A currently-valid access token for an authenticated main-process call
+   * (Phase 5's backend client; the token never crosses to the renderer).
+   *
+   * - joins an in-flight login and reads the session it produced;
+   * - returns the live token while it is outside the `exp − 30s` window;
+   * - otherwise forces one refresh through the shared single-flight
+   *   pipeline (same slot as the proactive timer, so concurrent callers
+   *   mint at most one token request);
+   * - `force` skips the freshness window and refreshes unconditionally —
+   *   the backend client's refresh-once-on-401 path.
+   *
+   * Typed `not_logged_in` AuthFlowError when there is no session; a failed
+   * forced refresh rethrows the orchestrator's typed error after the usual
+   * terminal handling (wipe + anonymous broadcast).
+   */
+  async getAccessToken(options: { force?: boolean } = {}): Promise<string> {
+    // a login in flight will set or definitively not set `current` before
+    // its run settles — join it so the decision below is never premature
+    const login = this.loginRun
+    if (login !== undefined) await login
+
+    const current = this.current
+    if (current === undefined) {
+      throw new AuthFlowError('No session to serve an access token from', {
+        code: 'not_logged_in',
+      })
+    }
+    if (options.force !== true && this.tokenUsable(current)) return current.accessToken
+    return (await this.refreshNow()).accessToken
+  }
+
+  /** True while the access token is outside the `exp − 30s` refresh window. */
+  private tokenUsable(session: AuthSession): boolean {
+    return (
+      session.accessTokenExpiresAt === undefined ||
+      this.now() < session.accessTokenExpiresAt - REFRESH_LEAD_MS
+    )
   }
 
   /**
@@ -378,19 +431,64 @@ export class AuthSessionManager {
     }
   }
 
+  /**
+   * One shared refresh pipeline: adopt on success, and on a terminal failure
+   * (dead refresh token) do the local logout — wipe + anonymous broadcast —
+   * before rethrowing the orchestrator's typed error. Transient failures
+   * rethrow untouched; the proactive timer layer adds its retry backoff.
+   */
+  private runSharedRefresh(): Promise<AuthSession> {
+    return (async (): Promise<AuthSession> => {
+      try {
+        const session = await this.orchestrator.refresh()
+        this.adopt(session)
+        return session
+      } catch (error) {
+        if (this.isTerminalAuthError(error)) {
+          // the refresh token died while the app ran: local logout + broadcast
+          this.current = undefined
+          this.clearRefreshTimer()
+          await this.wipeQuietly('the refresh token was rejected')
+          this.emitSessionChanged()
+        }
+        throw error
+      }
+    })()
+  }
+
+  /**
+   * Start (or join) the in-flight refresh. Concurrent callers — the proactive
+   * timer plus any number of `getAccessToken()` consumers — share one
+   * pipeline: one token request and one terminal handling, however many
+   * await it.
+   */
+  private refreshNow(): Promise<AuthSession> {
+    const inFlight = this.refreshRun
+    if (inFlight !== undefined) return inFlight
+    const run = this.runSharedRefresh()
+    this.refreshRun = run
+    // free the slot when the pipeline settles (also marks `run` handled for
+    // the window where no caller has attached yet)
+    void run.then(
+      () => {
+        if (this.refreshRun === run) this.refreshRun = undefined
+      },
+      () => {
+        if (this.refreshRun === run) this.refreshRun = undefined
+      },
+    )
+    return run
+  }
+
   private async refreshProactively(): Promise<void> {
     try {
-      this.adopt(await this.orchestrator.refresh())
+      await this.refreshNow()
     } catch (error) {
       if (error instanceof AuthError && error.code === 'cancelled') return
-      if (this.isTerminalAuthError(error)) {
-        // the refresh token died while the app ran: local logout + broadcast
-        this.current = undefined
-        await this.wipeQuietly('the refresh token was rejected')
-        this.emitSessionChanged()
-        return
-      }
-      // transient failure: retry shortly so the session survives a blip
+      // terminal failures were handled inside the shared pipeline (wipe +
+      // anonymous broadcast); everything else is transient — retry shortly
+      // so the session survives a blip
+      if (this.isTerminalAuthError(error)) return
       this.refreshTimer = setTimeout(() => {
         this.refreshTimer = undefined
         void this.refreshProactively()

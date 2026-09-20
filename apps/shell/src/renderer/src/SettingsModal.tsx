@@ -27,6 +27,7 @@ import type {
 import { useI18n } from './locale'
 import type { StringKey, TFunc } from './locale'
 import type { AccountStatus, AiCatalogEntry, UiTheme } from '../../shared/home-api'
+import type { AuthBackendProbeResult } from '../../shared/auth-api'
 import { ProviderLogo } from './provider-logos'
 import { IntegrationsPane, skillUpdateDue } from './IntegrationsPane'
 import './settings.css'
@@ -1026,6 +1027,8 @@ function CloudAccountSection({ t }: { t: TFunc }) {
   const [loggingOut, setLoggingOut] = useState(false)
   const [codeCopied, setCodeCopied] = useState(false)
   const [openPageFailed, setOpenPageFailed] = useState(false)
+  const [probe, setProbe] = useState<AuthBackendProbeResult | null>(null)
+  const [probing, setProbing] = useState(false)
 
   const lastEvent = loginEvents.at(-1)
   const waitingEvent = lastEvent?.status === 'waiting-for-confirmation' ? lastEvent : undefined
@@ -1042,6 +1045,29 @@ function CloudAccountSection({ t }: { t: TFunc }) {
   const pending = starting || waitingEvent !== undefined
 
   const remainingMs = useExpiryCountdown(waitingEvent?.expiresAt ?? null)
+
+  /**
+   * One on-demand whoami probe (pane mount / manual retry) — explicitly not
+   * a poller. Runs only with a live session: the probe is a Bearer request,
+   * anonymous has nothing to ask the backend. Translation stays out (t is
+   * not referentially stable); the result is rendered at render time.
+   */
+  const runProbe = useCallback((): void => {
+    const api = window.aiOfficeAuth
+    if (!api) return
+    setProbing(true)
+    void api
+      .probeBackend()
+      .then((result) => setProbe(result))
+      .catch(() => setProbe({ ok: false }))
+      .finally(() => setProbing(false))
+  }, [])
+
+  // probe when the section mounts signed in, and again whenever a session
+  // (re)appears — the sign-in right above ends with exactly that transition
+  useEffect(() => {
+    if (authenticated) runProbe()
+  }, [authenticated, runProbe])
 
   const startLogin = (): void => {
     if (pending) return
@@ -1107,6 +1133,27 @@ function CloudAccountSection({ t }: { t: TFunc }) {
         <>
           <Field label={t('cloudAccountName')} value={profile.name ?? profile.sub} />
           <Field label={t('setEmail')} value={profile.email ?? '—'} />
+          {/* backend connection line: the probe result carries ok + HTTP
+              status only — never a URL, token, or error message */}
+          <Field
+            label={t('cloudBackendLabel')}
+            value={
+              probing
+                ? t('cloudBackendChecking')
+                : probe === null
+                  ? '—'
+                  : probe.ok
+                    ? t('cloudBackendConnected')
+                    : probe.status !== undefined
+                      ? t('cloudBackendOfflineStatus', { v: String(probe.status) })
+                      : t('cloudBackendOffline')
+            }
+            action={
+              <button className="set-btn" disabled={probing} onClick={runProbe}>
+                {t('cloudBackendRetry')}
+              </button>
+            }
+          />
           <div className="set-btn-row">
             <button className="set-btn danger" disabled={loggingOut} onClick={doLogout}>
               {loggingOut ? t('loggingOut') : t('logout')}

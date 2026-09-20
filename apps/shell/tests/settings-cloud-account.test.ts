@@ -9,6 +9,7 @@ import type { Mock } from 'vitest'
 import type { HomeApi } from '../src/shared/home-api'
 import type {
   AuthApi,
+  AuthBackendProbeResult,
   AuthLoginEventPayload,
   AuthOpenVerificationPageResult,
   AuthSessionChangedPayload,
@@ -65,17 +66,19 @@ function buttonWithText(text: string, scope: ParentNode = host): HTMLButtonEleme
   return [...scope.querySelectorAll('button')].find((b) => b.textContent?.trim() === text)
 }
 
-/** controllable AuthApi double: scripted pushes, deferred login promise */
+/** controllable AuthApi double: scripted pushes, deferred login + probe promises */
 interface AuthHarness {
   api: AuthApi
   login: Mock
   cancelLogin: Mock
   logout: Mock
   openVerificationPage: Mock
+  probeBackend: Mock
   emitLogin: (event: AuthLoginEventPayload) => void
   emitSessionChanged: (payload: AuthSessionChangedPayload) => void
   setSnapshot: (snapshot: AuthSessionSnapshot) => void
   resolveLogin: () => void
+  resolveProbe: (result: AuthBackendProbeResult) => void
 }
 
 function makeAuth(initial: AuthSessionSnapshot): AuthHarness {
@@ -83,6 +86,7 @@ function makeAuth(initial: AuthSessionSnapshot): AuthHarness {
   const loginHandlers: Array<(event: AuthLoginEventPayload) => void> = []
   const sessionHandlers: Array<(payload: AuthSessionChangedPayload) => void> = []
   const loginResolvers: Array<() => void> = []
+  const probeResolvers: Array<(result: AuthBackendProbeResult) => void> = []
   const api: AuthApi = {
     login: vi.fn(
       () =>
@@ -102,6 +106,12 @@ function makeAuth(initial: AuthSessionSnapshot): AuthHarness {
       return () => {}
     },
     openVerificationPage: vi.fn(async () => ({ ok: true }) as AuthOpenVerificationPageResult),
+    probeBackend: vi.fn(
+      () =>
+        new Promise<AuthBackendProbeResult>((resolve) => {
+          probeResolvers.push(resolve)
+        }),
+    ),
   }
   return {
     api,
@@ -109,6 +119,7 @@ function makeAuth(initial: AuthSessionSnapshot): AuthHarness {
     cancelLogin: api.cancelLogin as unknown as Mock,
     logout: api.logout as unknown as Mock,
     openVerificationPage: api.openVerificationPage as unknown as Mock,
+    probeBackend: api.probeBackend as unknown as Mock,
     emitLogin: (event) => {
       for (const handler of [...loginHandlers]) handler(event)
     },
@@ -119,6 +130,7 @@ function makeAuth(initial: AuthSessionSnapshot): AuthHarness {
       snapshot = next
     },
     resolveLogin: () => loginResolvers.splice(0).forEach((resolve) => resolve()),
+    resolveProbe: (result) => probeResolvers.splice(0).forEach((resolve) => resolve(result)),
   }
 }
 
@@ -304,5 +316,103 @@ describe('Settings → Account → cloud account', () => {
     })
     await flush()
     expect(host.querySelector('.set-cloud')).toBeNull()
+  })
+})
+
+describe('Settings → Account → backend connection line', () => {
+  const authenticated: AuthSessionSnapshot = {
+    status: 'authenticated',
+    storage: 'encrypted',
+    profile: { sub: 'user-1', name: 'Alice', roles: [] },
+  }
+
+  it('probes once on mount when signed in, then shows connected', async () => {
+    const h = makeAuth(authenticated)
+    await renderModal(h.api)
+
+    expect(h.probeBackend).toHaveBeenCalledTimes(1)
+    expect(host.textContent).toContain('Checking connection…')
+
+    await act(async () => {
+      h.resolveProbe({ ok: true, status: 200 })
+    })
+    await flush()
+    expect(host.textContent).toContain('Cloud service')
+    expect(host.textContent).toContain('Connected')
+  })
+
+  it('shows the HTTP status when the backend answered with a non-2xx', async () => {
+    const h = makeAuth(authenticated)
+    await renderModal(h.api)
+
+    await act(async () => {
+      h.resolveProbe({ ok: false, status: 401 })
+    })
+    await flush()
+    expect(host.textContent).toContain('Not connected (HTTP 401)')
+  })
+
+  it('shows plain not connected when nothing answered (network / logged out)', async () => {
+    const h = makeAuth(authenticated)
+    await renderModal(h.api)
+
+    await act(async () => {
+      h.resolveProbe({ ok: false })
+    })
+    await flush()
+    expect(host.textContent).toContain('Not connected')
+    expect(host.textContent).not.toContain('Not connected (HTTP')
+  })
+
+  it('re-probes only on the manual retry action — never on a timer', async () => {
+    const h = makeAuth(authenticated)
+    await renderModal(h.api)
+    await act(async () => {
+      h.resolveProbe({ ok: false, status: 503 })
+    })
+    await flush()
+
+    // settling alone triggers nothing further (no poller)
+    await flush()
+    await flush()
+    expect(h.probeBackend).toHaveBeenCalledTimes(1)
+
+    await click(buttonWithText('Check again'))
+    expect(h.probeBackend).toHaveBeenCalledTimes(2)
+    await act(async () => {
+      h.resolveProbe({ ok: true, status: 200 })
+    })
+    await flush()
+    expect(host.textContent).toContain('Connected')
+  })
+
+  it('does not probe while signed out', async () => {
+    const h = makeAuth(anonymous)
+    await renderModal(h.api)
+    await flush()
+
+    expect(h.probeBackend).not.toHaveBeenCalled()
+    expect(host.textContent).not.toContain('Cloud service')
+  })
+
+  it('probes again when a session appears (sign-in completes)', async () => {
+    const h = makeAuth(anonymous)
+    await renderModal(h.api)
+
+    await click(buttonWithText('Sign in to cloud account'))
+    await act(async () => {
+      h.emitLogin({ status: 'success' })
+      h.setSnapshot(authenticated)
+      h.emitSessionChanged({ status: 'authenticated' })
+      h.resolveLogin()
+    })
+    await flush()
+
+    expect(h.probeBackend).toHaveBeenCalledTimes(1)
+    await act(async () => {
+      h.resolveProbe({ ok: true, status: 200 })
+    })
+    await flush()
+    expect(host.textContent).toContain('Connected')
   })
 })

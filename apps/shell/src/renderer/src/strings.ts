@@ -160,6 +160,13 @@ export const strings = {
     cloudLoginErrCancelled: '已取消登录',
     cloudLoginErrGeneric: '登录失败，请重试',
     cloudStorageWarning: '此设备无法使用加密存储，登录凭据将以明文保存在本地文件中。',
+    // Cloud backend connection line (whoami probe)
+    cloudBackendLabel: '云服务',
+    cloudBackendChecking: '正在检查连接…',
+    cloudBackendConnected: '已连接',
+    cloudBackendOffline: '未连接',
+    cloudBackendOfflineStatus: '未连接（HTTP {v}）',
+    cloudBackendRetry: '重新检测',
     appVersion: '版本 {v}',
     versionLabel: '版本',
     updateChannel: '更新通道',
@@ -532,6 +539,13 @@ export const strings = {
     cloudLoginErrGeneric: 'Sign-in failed; please try again',
     cloudStorageWarning:
       'Encrypted storage is unavailable on this device; sign-in credentials will be kept in a plain local file.',
+    // Cloud backend connection line (whoami probe)
+    cloudBackendLabel: 'Cloud service',
+    cloudBackendChecking: 'Checking connection…',
+    cloudBackendConnected: 'Connected',
+    cloudBackendOffline: 'Not connected',
+    cloudBackendOfflineStatus: 'Not connected (HTTP {v})',
+    cloudBackendRetry: 'Check again',
     appVersion: 'Version {v}',
     versionLabel: 'Version',
     updateChannel: 'Update Channel',
@@ -927,6 +941,13 @@ export const strings = {
     cloudLoginErrGeneric: 'ログインに失敗しました。もう一度お試しください',
     cloudStorageWarning:
       'このデバイスでは暗号化ストレージを利用できないため、ログイン情報は平文のローカルファイルに保存されます。',
+    // Cloud backend connection line (whoami probe)
+    cloudBackendLabel: 'クラウドサービス',
+    cloudBackendChecking: '接続を確認中…',
+    cloudBackendConnected: '接続済み',
+    cloudBackendOffline: '未接続',
+    cloudBackendOfflineStatus: '未接続（HTTP {v}）',
+    cloudBackendRetry: '再チェック',
     appVersion: 'バージョン {v}',
     versionLabel: 'バージョン',
     updateChannel: '更新チャネル',
@@ -1321,6 +1342,13 @@ export const strings = {
     cloudLoginErrGeneric: '로그인에 실패했습니다. 다시 시도해 주세요',
     cloudStorageWarning:
       '이 기기에서는 암호화 저장소를 사용할 수 없어 로그인 자격 증명이 평문 로컬 파일에 저장됩니다.',
+    // Cloud backend connection line (whoami probe)
+    cloudBackendLabel: '클라우드 서비스',
+    cloudBackendChecking: '연결 확인 중…',
+    cloudBackendConnected: '연결됨',
+    cloudBackendOffline: '연결되지 않음',
+    cloudBackendOfflineStatus: '연결되지 않음(HTTP {v})',
+    cloudBackendRetry: '다시 확인',
     appVersion: '버전 {v}',
     versionLabel: '버전',
     updateChannel: '업데이트 채널',
@@ -1717,6 +1745,13 @@ export const strings = {
     cloudLoginErrGeneric: 'Échec de la connexion ; veuillez réessayer',
     cloudStorageWarning:
       'Le stockage chiffré est indisponible sur cet appareil ; les identifiants seront conservés dans un fichier local en clair.',
+    // Cloud backend connection line (whoami probe)
+    cloudBackendLabel: 'Service cloud',
+    cloudBackendChecking: 'Vérification de la connexion…',
+    cloudBackendConnected: 'Connecté',
+    cloudBackendOffline: 'Non connecté',
+    cloudBackendOfflineStatus: 'Non connecté (HTTP {v})',
+    cloudBackendRetry: 'Revérifier',
     appVersion: 'Version {v}',
     versionLabel: 'Version',
     updateChannel: 'Canal de mise à jour',
@@ -2125,6 +2160,13 @@ export const strings = {
     cloudLoginErrGeneric: 'Anmeldung fehlgeschlagen; bitte erneut versuchen',
     cloudStorageWarning:
       'Verschlüsselter Speicher ist auf diesem Gerät nicht verfügbar; Anmeldedaten werden in einer unverschlüsselten lokalen Datei gespeichert.',
+    // Cloud backend connection line (whoami probe)
+    cloudBackendLabel: 'Cloud-Dienst',
+    cloudBackendChecking: 'Verbindung wird geprüft…',
+    cloudBackendConnected: 'Verbunden',
+    cloudBackendOffline: 'Nicht verbunden',
+    cloudBackendOfflineStatus: 'Nicht verbunden (HTTP {v})',
+    cloudBackendRetry: 'Erneut prüfen',
     appVersion: 'Version {v}',
     versionLabel: 'Version',
     updateChannel: 'Update-Kanal',
@@ -2531,6 +2573,13 @@ export const strings = {
     cloudLoginErrGeneric: 'Error al iniciar sesión; inténtalo de nuevo',
     cloudStorageWarning:
       'El almacenamiento cifrado no está disponible en este dispositivo; las credenciales se guardarán en un archivo local sin cifrar.',
+    // Cloud backend connection line (whoami probe)
+    cloudBackendLabel: 'Servicio en la nube',
+    cloudBackendChecking: 'Comprobando la conexión…',
+    cloudBackendConnected: 'Conectado',
+    cloudBackendOffline: 'No conectado',
+    cloudBackendOfflineStatus: 'No conectado (HTTP {v})',
+    cloudBackendRetry: 'Comprobar de nuevo',
     appVersion: 'Versión {v}',
     versionLabel: 'Versión',
     updateChannel: 'Canal de actualización',
@@ -2928,6 +2977,13 @@ export const strings = {
     cloudLoginErrGeneric: 'ลงชื่อเข้าใช้ไม่สำเร็จ โปรดลองอีกครั้ง',
     cloudStorageWarning:
       'อุปกรณ์นี้ไม่รองรับพื้นที่เก็บข้อมูลแบบเข้ารหัส ข้อมูลเข้าสู่ระบบจะถูกเก็บในไฟล์ในเครื่องแบบข้อความธรรมดา',
+    // Cloud backend connection line (whoami probe)
+    cloudBackendLabel: 'บริการคลาวด์',
+    cloudBackendChecking: 'กำลังตรวจสอบการเชื่อมต่อ…',
+    cloudBackendConnected: 'เชื่อมต่อแล้ว',
+    cloudBackendOffline: 'ไม่ได้เชื่อมต่อ',
+    cloudBackendOfflineStatus: 'ไม่ได้เชื่อมต่อ (HTTP {v})',
+    cloudBackendRetry: 'ตรวจสอบอีกครั้ง',
     appVersion: 'เวอร์ชัน {v}',
     versionLabel: 'เวอร์ชัน',
     updateChannel: 'ช่องทางอัปเดต',
@@ -3319,6 +3375,13 @@ export const strings = {
     cloudLoginErrGeneric: 'Gagal masuk; silakan coba lagi',
     cloudStorageWarning:
       'Penyimpanan terenkripsi tidak tersedia di perangkat ini; kredensial masuk akan disimpan dalam berkas lokal biasa.',
+    // Cloud backend connection line (whoami probe)
+    cloudBackendLabel: 'Layanan cloud',
+    cloudBackendChecking: 'Memeriksa koneksi…',
+    cloudBackendConnected: 'Terhubung',
+    cloudBackendOffline: 'Tidak terhubung',
+    cloudBackendOfflineStatus: 'Tidak terhubung (HTTP {v})',
+    cloudBackendRetry: 'Periksa lagi',
     appVersion: 'Versi {v}',
     versionLabel: 'Versi',
     updateChannel: 'Saluran Pembaruan',
@@ -3714,6 +3777,13 @@ export const strings = {
     cloudLoginErrGeneric: 'Не удалось войти; попробуйте ещё раз',
     cloudStorageWarning:
       'Зашифрованное хранилище недоступно на этом устройстве; учётные данные будут сохранены в обычном локальном файле.',
+    // Cloud backend connection line (whoami probe)
+    cloudBackendLabel: 'Облачный сервис',
+    cloudBackendChecking: 'Проверка соединения…',
+    cloudBackendConnected: 'Подключено',
+    cloudBackendOffline: 'Нет подключения',
+    cloudBackendOfflineStatus: 'Нет подключения (HTTP {v})',
+    cloudBackendRetry: 'Проверить снова',
     appVersion: 'Версия {v}',
     versionLabel: 'Версия',
     updateChannel: 'Канал обновлений',
@@ -4108,6 +4178,13 @@ export const strings = {
     cloudLoginErrGeneric: 'فشل تسجيل الدخول؛ حاول مرة أخرى',
     cloudStorageWarning:
       'التخزين المشفّر غير متاح على هذا الجهاز؛ ستُحفظ بيانات تسجيل الدخول في ملف محلي غير مشفّر.',
+    // Cloud backend connection line (whoami probe)
+    cloudBackendLabel: 'خدمة السحابة',
+    cloudBackendChecking: 'جارٍ التحقق من الاتصال…',
+    cloudBackendConnected: 'متصل',
+    cloudBackendOffline: 'غير متصل',
+    cloudBackendOfflineStatus: 'غير متصل (HTTP {v})',
+    cloudBackendRetry: 'إعادة التحقق',
     appVersion: 'الإصدار {v}',
     versionLabel: 'الإصدار',
     updateChannel: 'قناة التحديث',
@@ -4493,6 +4570,13 @@ export const strings = {
     cloudLoginErrGeneric: 'Falha ao entrar; tente novamente',
     cloudStorageWarning:
       'O armazenamento criptografado não está disponível neste dispositivo; as credenciais serão salvas em um arquivo local sem criptografia.',
+    // Cloud backend connection line (whoami probe)
+    cloudBackendLabel: 'Serviço de nuvem',
+    cloudBackendChecking: 'Verificando a conexão…',
+    cloudBackendConnected: 'Conectado',
+    cloudBackendOffline: 'Não conectado',
+    cloudBackendOfflineStatus: 'Não conectado (HTTP {v})',
+    cloudBackendRetry: 'Verificar novamente',
     appVersion: 'Versão {v}',
     versionLabel: 'Versão',
     updateChannel: 'Canal de atualização',
@@ -4886,6 +4970,13 @@ export const strings = {
     cloudLoginErrGeneric: 'Accesso non riuscito; riprova',
     cloudStorageWarning:
       'L’archiviazione crittografata non è disponibile su questo dispositivo; le credenziali verranno salvate in un file locale non crittografato.',
+    // Cloud backend connection line (whoami probe)
+    cloudBackendLabel: 'Servizio cloud',
+    cloudBackendChecking: 'Verifica della connessione…',
+    cloudBackendConnected: 'Connesso',
+    cloudBackendOffline: 'Non connesso',
+    cloudBackendOfflineStatus: 'Non connesso (HTTP {v})',
+    cloudBackendRetry: 'Ricontrolla',
     appVersion: 'Versione {v}',
     versionLabel: 'Versione',
     updateChannel: 'Canale di aggiornamento',
@@ -5277,6 +5368,13 @@ export const strings = {
     cloudLoginErrGeneric: 'Logowanie nie powiodło się; spróbuj ponownie',
     cloudStorageWarning:
       'Szyfrowana pamięć nie jest dostępna na tym urządzeniu; dane logowania będą zapisane w zwykłym pliku lokalnym.',
+    // Cloud backend connection line (whoami probe)
+    cloudBackendLabel: 'Usługa chmurowa',
+    cloudBackendChecking: 'Sprawdzanie połączenia…',
+    cloudBackendConnected: 'Połączono',
+    cloudBackendOffline: 'Brak połączenia',
+    cloudBackendOfflineStatus: 'Brak połączenia (HTTP {v})',
+    cloudBackendRetry: 'Sprawdź ponownie',
     appVersion: 'Wersja {v}',
     versionLabel: 'Wersja',
     updateChannel: 'Kanał aktualizacji',
@@ -5663,6 +5761,13 @@ export const strings = {
     cloudLoginErrGeneric: 'Přihlášení se nezdařilo; zkuste to znovu',
     cloudStorageWarning:
       'Šifrované úložiště není na tomto zařízení k dispozici; přihlašovací údaje budou uloženy v nešifrovaném místním souboru.',
+    // Cloud backend connection line (whoami probe)
+    cloudBackendLabel: 'Cloudová služba',
+    cloudBackendChecking: 'Kontroluje se připojení…',
+    cloudBackendConnected: 'Připojeno',
+    cloudBackendOffline: 'Nepřipojeno',
+    cloudBackendOfflineStatus: 'Nepřipojeno (HTTP {v})',
+    cloudBackendRetry: 'Zkontrolovat znovu',
     appVersion: 'Verze {v}',
     versionLabel: 'Verze',
     updateChannel: 'Kanál aktualizací',
@@ -6051,6 +6156,13 @@ export const strings = {
     cloudLoginErrGeneric: 'Aanmelden mislukt; probeer het opnieuw',
     cloudStorageWarning:
       'Versleutelde opslag is niet beschikbaar op dit apparaat; inloggegevens worden bewaard in een gewoon lokaal bestand.',
+    // Cloud backend connection line (whoami probe)
+    cloudBackendLabel: 'Cloudservice',
+    cloudBackendChecking: 'Verbinding controleren…',
+    cloudBackendConnected: 'Verbonden',
+    cloudBackendOffline: 'Niet verbonden',
+    cloudBackendOfflineStatus: 'Niet verbonden (HTTP {v})',
+    cloudBackendRetry: 'Opnieuw controleren',
     appVersion: 'Versie {v}',
     versionLabel: 'Versie',
     updateChannel: 'Updatekanaal',
@@ -6441,6 +6553,13 @@ export const strings = {
     cloudLoginErrGeneric: 'Log masuk gagal; sila cuba lagi',
     cloudStorageWarning:
       'Storan tersulit tidak tersedia pada peranti ini; kredensi log masuk akan disimpan dalam fail setempat biasa.',
+    // Cloud backend connection line (whoami probe)
+    cloudBackendLabel: 'Perkhidmatan awan',
+    cloudBackendChecking: 'Menyemak sambungan…',
+    cloudBackendConnected: 'Bersambung',
+    cloudBackendOffline: 'Tidak bersambung',
+    cloudBackendOfflineStatus: 'Tidak bersambung (HTTP {v})',
+    cloudBackendRetry: 'Semak semula',
     appVersion: 'Versi {v}',
     versionLabel: 'Versi',
     updateChannel: 'Saluran Kemas Kini',
@@ -6828,6 +6947,13 @@ export const strings = {
     cloudLoginErrCancelled: 'ההתחברות בוטלה',
     cloudLoginErrGeneric: 'ההתחברות נכשלה; נסו שוב',
     cloudStorageWarning: 'אחסון מוצפן אינו זמין במכשיר זה; פרטי ההתחברות יישמרו בקובץ מקומי רגיל.',
+    // Cloud backend connection line (whoami probe)
+    cloudBackendLabel: 'שירות ענן',
+    cloudBackendChecking: 'בודק חיבור…',
+    cloudBackendConnected: 'מחובר',
+    cloudBackendOffline: 'לא מחובר',
+    cloudBackendOfflineStatus: 'לא מחובר (HTTP {v})',
+    cloudBackendRetry: 'בדוק שוב',
     appVersion: 'גרסה {v}',
     versionLabel: 'גרסה',
     updateChannel: 'ערוץ עדכונים',
@@ -7206,6 +7332,13 @@ export const strings = {
     cloudLoginErrGeneric: 'साइन-इन विफल; कृपया पुनः प्रयास करें',
     cloudStorageWarning:
       'इस डिवाइस पर एन्क्रिप्टेड स्टोरेज उपलब्ध नहीं है; साइन-इन क्रेडेंशियल सादी लोकल फ़ाइल में सहेजे जाएँगे।',
+    // Cloud backend connection line (whoami probe)
+    cloudBackendLabel: 'क्लाउड सेवा',
+    cloudBackendChecking: 'कनेक्शन की जाँच हो रही है…',
+    cloudBackendConnected: 'कनेक्टेड',
+    cloudBackendOffline: 'कनेक्ट नहीं है',
+    cloudBackendOfflineStatus: 'कनेक्ट नहीं है (HTTP {v})',
+    cloudBackendRetry: 'फिर जाँचें',
     appVersion: 'संस्करण {v}',
     versionLabel: 'संस्करण',
     updateChannel: 'अपडेट चैनल',
@@ -7586,6 +7719,13 @@ export const strings = {
     cloudLoginErrCancelled: '已取消登入',
     cloudLoginErrGeneric: '登入失敗，請重試',
     cloudStorageWarning: '此裝置無法使用加密儲存，登入憑證將以明文保存在本機檔案中。',
+    // Cloud backend connection line (whoami probe)
+    cloudBackendLabel: '雲端服務',
+    cloudBackendChecking: '正在檢查連線…',
+    cloudBackendConnected: '已連線',
+    cloudBackendOffline: '未連線',
+    cloudBackendOfflineStatus: '未連線（HTTP {v}）',
+    cloudBackendRetry: '重新檢測',
     appVersion: '版本 {v}',
     versionLabel: '版本',
     updateChannel: '更新通道',

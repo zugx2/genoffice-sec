@@ -469,6 +469,139 @@ describe('AuthSessionManager refresh timer', () => {
   })
 })
 
+describe('AuthSessionManager getAccessToken', () => {
+  it('serves the live token without any refresh traffic while outside the window', async () => {
+    const fetchFn = issuerFetch({
+      [DISCOVERY_URL]: discovery,
+      [DEVICE_ENDPOINT]: deviceAuth,
+      [TOKEN_ENDPOINT]: tokenSuccess,
+    })
+    const harness = makeHarness({ fetchFn, sleep: instantSleep, now: () => START_AT })
+
+    await harness.manager.startLogin()
+
+    await expect(harness.manager.getAccessToken()).resolves.toBe('access-1')
+    // login mint only — no refresh, no extra network
+    expect(fetchFn.calls.filter((url) => url === TOKEN_ENDPOINT)).toHaveLength(1)
+  })
+
+  it('throws the typed not_logged_in error when there is no session', async () => {
+    const fetchFn = issuerFetch({})
+    const harness = makeHarness({ fetchFn, sleep: instantSleep, now: () => START_AT })
+
+    await expect(harness.manager.getAccessToken()).rejects.toMatchObject({
+      code: 'not_logged_in',
+    })
+    expect(fetchFn.calls).toEqual([])
+  })
+
+  it('forces one refresh when the token is past the exp − 30s window', async () => {
+    let clock = START_AT
+    const fetchFn = issuerFetch({
+      [DISCOVERY_URL]: discovery,
+      [DEVICE_ENDPOINT]: deviceAuth,
+      [TOKEN_ENDPOINT]: () =>
+        tokenSuccess({
+          access_token: 'access-2',
+          refresh_token: 'refresh-2',
+          id_token: ID_TOKEN_2,
+        }),
+    })
+    const harness = makeHarness({
+      fetchFn,
+      store: memoryStore(),
+      sleep: instantSleep,
+      now: () => clock,
+    })
+
+    await harness.manager.startLogin()
+    // expires_in 300 → the window closes at exp − 30s = 270s after obtainment
+    clock += 270_000
+    await expect(harness.manager.getAccessToken()).resolves.toBe('access-2')
+    expect(fetchFn.calls.filter((url) => url === TOKEN_ENDPOINT)).toHaveLength(2)
+  })
+
+  it('force skips the freshness window and refreshes even a fresh token', async () => {
+    const fetchFn = issuerFetch({
+      [DISCOVERY_URL]: discovery,
+      [DEVICE_ENDPOINT]: deviceAuth,
+      [TOKEN_ENDPOINT]: () =>
+        tokenSuccess({
+          access_token: 'access-2',
+          refresh_token: 'refresh-2',
+          id_token: ID_TOKEN_2,
+        }),
+    })
+    const harness = makeHarness({ fetchFn, sleep: instantSleep, now: () => START_AT })
+
+    await harness.manager.startLogin()
+    await expect(harness.manager.getAccessToken({ force: true })).resolves.toBe('access-2')
+    expect(fetchFn.calls.filter((url) => url === TOKEN_ENDPOINT)).toHaveLength(2)
+  })
+
+  it('joins an in-flight login instead of answering not_logged_in', async () => {
+    const sleepResolvers: Array<() => void> = []
+    const gatedSleep = (): Promise<void> =>
+      new Promise((resolve) => {
+        sleepResolvers.push(resolve)
+      })
+    let deviceApproved = false
+    const fetchFn = issuerFetch({
+      [DISCOVERY_URL]: discovery,
+      [DEVICE_ENDPOINT]: deviceAuth,
+      [TOKEN_ENDPOINT]: () => (deviceApproved ? tokenSuccess() : authorizationPending()),
+    })
+    const harness = makeHarness({ fetchFn, sleep: gatedSleep, now: () => START_AT })
+
+    const login = harness.manager.startLogin()
+    await vi.waitFor(() => expect(harness.loginEvents[0]?.status).toBe('waiting-for-confirmation'))
+
+    const token = harness.manager.getAccessToken()
+    deviceApproved = true
+    sleepResolvers.splice(0).forEach((resolve) => resolve())
+    await login
+    await expect(token).resolves.toBe('access-1')
+  })
+
+  it('single-flights concurrent forced refreshes: one request, one anonymous broadcast', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      let tokenCall = 0
+      const fetchFn = issuerFetch({
+        [DISCOVERY_URL]: discovery,
+        [DEVICE_ENDPOINT]: deviceAuth,
+        [TOKEN_ENDPOINT]: () => {
+          tokenCall += 1
+          return tokenCall === 1 ? tokenSuccess() : invalidGrant()
+        },
+        [REVOKE_ENDPOINT]: () => jsonResponse('{}'),
+      })
+      const store = memoryStore()
+      const harness = makeHarness({ fetchFn, store, sleep: instantSleep, now: () => START_AT })
+
+      await harness.manager.startLogin()
+      expect(store.peek()).not.toBeNull()
+
+      const probes = [
+        harness.manager.getAccessToken({ force: true }),
+        harness.manager.getAccessToken({ force: true }),
+      ]
+      for (const probe of probes) {
+        await expect(probe).rejects.toMatchObject({ code: 'refresh_failed' })
+      }
+
+      // one shared refresh: login mint + a single rejected refresh attempt
+      expect(fetchFn.calls.filter((url) => url === TOKEN_ENDPOINT)).toHaveLength(2)
+      // terminal handling ran exactly once for both callers
+      expect(harness.sessionEvents).toEqual([{ status: 'authenticated' }, { status: 'anonymous' }])
+      expect(store.peek()).toBeNull()
+      expect(harness.manager.snapshot().status).toBe('anonymous')
+    } finally {
+      warn.mockRestore()
+    }
+  })
+})
+
 describe('AuthSessionManager logout', () => {
   it('wipes, broadcasts, and opens the origin-checked end-session URL; the timer stops', async () => {
     vi.useFakeTimers()

@@ -28,6 +28,13 @@ All application windows run with the full Electron renderer lockdown:
   where no OS keyring exists), and issuer pages (device verification,
   end-session) open only through `safeExternalUrl` with the configured
   issuer's origin allowlisted.
+- Cloud-backend calls (main process only) go through an authenticated client:
+  the configured base URL is validated once through the SSRF gate at
+  construction (`safe-remote-url`; private/loopback hosts are allowed for
+  this operator-configured target), requests attach the session's Bearer
+  token and force at most one refresh-and-retry on a 401, and the renderer
+  learns only `{ok, status?}` probe verdicts — never a token, URL, or
+  response body.
 
 ## Threat Model: AI-Generated Layout Scripts (slides)
 

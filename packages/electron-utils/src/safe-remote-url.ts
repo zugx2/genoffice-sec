@@ -46,6 +46,19 @@ export function isBlockedAddress(ip: string): boolean {
   return blockedAddresses.check(ip, family === 4 ? 'ipv4' : 'ipv6')
 }
 
+export interface SafeRemoteUrlOptions {
+  /**
+   * Allow non-public hosts — loopback and private ranges, link-local, and
+   * the `.localhost` / `.local` / `.internal` hostname suffixes — and skip
+   * the DNS resolution entirely. For operator-configured targets only (the
+   * cloud backend base URL): trusted configuration that legitimately points
+   * at loopback in dev and at internal networks in enterprise deployments,
+   * and that must not depend on name resolution at validation time. Anything
+   * model- or user-steered keeps the strict default.
+   */
+  allowPrivateHosts?: boolean
+}
+
 /**
  * True when the URL is http(s) and its host is public. Literal addresses are
  * checked directly; hostnames are resolved and every returned address must pass,
@@ -55,7 +68,10 @@ export function isBlockedAddress(ip: string): boolean {
  * check and the request (rebinding). Pair it with per-hop revalidation via
  * `fetchWithSsrfGuard` rather than relying on a single up-front check.
  */
-export async function isSafeRemoteUrl(raw: unknown): Promise<boolean> {
+export async function isSafeRemoteUrl(
+  raw: unknown,
+  options: SafeRemoteUrlOptions = {},
+): Promise<boolean> {
   if (typeof raw !== 'string') return false
   let url: URL
   try {
@@ -73,6 +89,9 @@ export async function isSafeRemoteUrl(raw: unknown): Promise<boolean> {
     .toLowerCase()
     .replace(/\.+$/, '')
   if (host === '') return false
+  // operator-configured target: only the shape rules above apply (scheme,
+  // parseability, non-empty host) — see SafeRemoteUrlOptions.allowPrivateHosts
+  if (options.allowPrivateHosts === true) return true
   if (isIP(host)) return !isBlockedAddress(host)
   if (host === 'localhost' || BLOCKED_HOST_SUFFIXES.some((s) => host.endsWith(s))) return false
   try {

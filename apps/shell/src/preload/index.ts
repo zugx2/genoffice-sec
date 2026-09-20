@@ -27,6 +27,7 @@ import { HOME_CHANNELS } from '../shared/home-api'
 import { AUTH_CHANNELS } from '../shared/auth-api'
 import type {
   AuthApi,
+  AuthBackendProbeResult,
   AuthLoginEventPayload,
   AuthOpenVerificationPageResult,
   AuthSessionChangedPayload,
@@ -549,6 +550,9 @@ const authApi: AuthApi & SessionApi = {
     return (await ipcRenderer.invoke(
       AUTH_CHANNELS.openVerificationPage,
     )) as AuthOpenVerificationPageResult
+  },
+  async probeBackend() {
+    return (await ipcRenderer.invoke(AUTH_CHANNELS.probeBackend)) as AuthBackendProbeResult
   },
 }
 

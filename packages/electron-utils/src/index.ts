@@ -54,6 +54,7 @@ export {
   isBlockedAddress,
   isSafeRemoteUrl,
   type FetchWithSsrfGuardOptions,
+  type SafeRemoteUrlOptions,
 } from './safe-remote-url'
 export { fetchRemoteImage, remoteImageHeaders } from './remote-image'
 export { GENERATED_IMAGE_DIR, readGeneratedImage, storeGeneratedImage } from './generated-images'
