@@ -7,6 +7,7 @@ import {
   Dropdown,
   aiPanelFontPx,
   clampAiCustomFontSize,
+  useSession,
 } from '@genoffice/ui'
 import type { AiFontSize, AiPanelPrefs, AiPanelSide } from '@genoffice/ui'
 import {
@@ -975,6 +976,185 @@ function AiStatusPill({ status }: { status: AiStatus | null }) {
   )
 }
 
+// ── Cloud account (device login, docs/cloud-backend-auth.md §C) ────────
+// The renderer only ever displays what the auth payloads carry (user code,
+// expiry, status, profile, storage kind) — the verification URL stays in
+// the main process; "open verification page" is a main-side action.
+
+/** stable login error code → i18n key; unknown codes show the generic line */
+const CLOUD_LOGIN_ERROR_KEYS: Record<string, StringKey> = {
+  network_error: 'cloudLoginErrNetwork',
+  access_denied: 'cloudLoginErrDenied',
+  expired_token: 'cloudLoginErrExpired',
+  poll_expired: 'cloudLoginErrExpired',
+  cancelled: 'cloudLoginErrCancelled',
+}
+
+/** mm:ss remaining — the digits are locale-neutral, only the label translates */
+function formatExpiryCountdown(remainingMs: number): string {
+  const total = Math.max(0, Math.ceil(remainingMs / 1000))
+  const minutes = Math.floor(total / 60)
+  const seconds = total % 60
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+}
+
+/**
+ * Seconds-precision countdown to `expiresAt` (null disarms). The effect
+ * cleanup clears the interval on unmount and whenever the deadline leaves
+ * (a terminal login event drops the waiting state), so no timer leaks.
+ */
+function useExpiryCountdown(expiresAt: number | null): number {
+  const [remaining, setRemaining] = useState(0)
+  useEffect(() => {
+    if (expiresAt === null) return
+    const tick = (): void => setRemaining(expiresAt - Date.now())
+    tick()
+    const timer = window.setInterval(tick, 1000)
+    return () => window.clearInterval(timer)
+  }, [expiresAt])
+  return remaining
+}
+
+/** Cloud-account section of the Account pane: device-flow login/logout + profile */
+function CloudAccountSection({ t }: { t: TFunc }) {
+  const { session, loginEvents, login, cancelLogin, logout } = useSession(window.aiOfficeAuth)
+  const [starting, setStarting] = useState(false)
+  const [loggingOut, setLoggingOut] = useState(false)
+  const [codeCopied, setCodeCopied] = useState(false)
+  const [openPageFailed, setOpenPageFailed] = useState(false)
+
+  const lastEvent = loginEvents.at(-1)
+  const waitingEvent = lastEvent?.status === 'waiting-for-confirmation' ? lastEvent : undefined
+  const authenticated = session?.status === 'authenticated'
+  // An attempt is pending from the invoke until its terminal event — the
+  // hook's login() promise settles exactly there — and, via the waiting
+  // event, also when this pane mounted mid-attempt (the pending event is
+  // replayed on subscribe). Both keep every login-starting action disabled
+  // so two concurrent auth:login invokes (which double-deliver login
+  // events) cannot happen from this UI.
+  const pending = starting || waitingEvent !== undefined
+
+  const remainingMs = useExpiryCountdown(waitingEvent?.expiresAt ?? null)
+
+  const startLogin = (): void => {
+    if (pending) return
+    setOpenPageFailed(false)
+    setCodeCopied(false)
+    setStarting(true)
+    // user-visible failures arrive as login events; an invoke-level
+    // rejection has nothing to show and simply re-arms the idle state
+    void login()
+      .catch(() => {})
+      .finally(() => setStarting(false))
+  }
+
+  const cancel = (): void => {
+    void cancelLogin().catch(() => {})
+  }
+
+  const copyCode = (): void => {
+    if (!waitingEvent) return
+    void navigator.clipboard.writeText(waitingEvent.userCode).then(() => {
+      setCodeCopied(true)
+      window.setTimeout(() => setCodeCopied(false), 2000)
+    })
+  }
+
+  const openVerificationPage = (): void => {
+    void window.aiOfficeAuth?.openVerificationPage().then((result) => {
+      setOpenPageFailed(!result.ok)
+    })
+  }
+
+  const doLogout = (): void => {
+    setLoggingOut(true)
+    void logout()
+      .catch(() => {})
+      .finally(() => setLoggingOut(false))
+  }
+
+  // no bridge (non-shell window / test host) or no snapshot yet: nothing to show
+  if (!window.aiOfficeAuth || session === null) return null
+
+  const failureKey =
+    lastEvent?.status === 'failure'
+      ? (CLOUD_LOGIN_ERROR_KEYS[lastEvent.error] ?? 'cloudLoginErrGeneric')
+      : null
+  const profile = session.profile
+
+  return (
+    <section className="set-cloud">
+      <h4 className="set-pane-subtitle">{t('cloudAccountTitle')}</h4>
+      {session.storage === 'plain-file' && (
+        <div className="set-cloud-warning" role="status">
+          {t('cloudStorageWarning')}
+        </div>
+      )}
+      {authenticated && profile ? (
+        <>
+          <Field label={t('cloudAccountName')} value={profile.name ?? profile.sub} />
+          <Field label={t('setEmail')} value={profile.email ?? '—'} />
+          <div className="set-btn-row">
+            <button className="set-btn danger" disabled={loggingOut} onClick={doLogout}>
+              {loggingOut ? t('loggingOut') : t('logout')}
+            </button>
+          </div>
+        </>
+      ) : waitingEvent ? (
+        <>
+          <div className="set-field-desc">{t('cloudLoginWaitingHint')}</div>
+          <div className="set-btn-row">
+            {/* the user code is shown exactly as received — the comparison on
+                the verification page is the anti-phishing step */}
+            <code className="set-cloud-code">{waitingEvent.userCode}</code>
+            <button className="set-btn" onClick={copyCode}>
+              {codeCopied ? t('loginCopied') : t('cloudCopyCode')}
+            </button>
+          </div>
+          <div className="set-field-desc">
+            {t('cloudLoginExpiresIn', { v: formatExpiryCountdown(remainingMs) })}
+          </div>
+          <div className="set-btn-row">
+            <button className="set-btn" onClick={openVerificationPage}>
+              {t('cloudOpenVerification')}
+            </button>
+            <button className="set-btn" onClick={cancel}>
+              {t('cloudLoginCancel')}
+            </button>
+          </div>
+          {openPageFailed && (
+            <div className="set-cloud-error">{t('cloudOpenVerificationStale')}</div>
+          )}
+        </>
+      ) : starting ? (
+        <>
+          <div className="set-field-desc">{t('cloudLoginStarting')}</div>
+          <div className="set-btn-row">
+            <button className="set-btn" onClick={cancel}>
+              {t('cloudLoginCancel')}
+            </button>
+          </div>
+        </>
+      ) : failureKey ? (
+        <>
+          <div className="set-cloud-error">{t(failureKey)}</div>
+          <div className="set-btn-row">
+            <button className="set-btn primary" disabled={pending} onClick={startLogin}>
+              {t('cloudLoginRetry')}
+            </button>
+          </div>
+        </>
+      ) : (
+        <div className="set-btn-row">
+          <button className="set-btn primary" disabled={pending} onClick={startLogin}>
+            {t('cloudLoginAction')}
+          </button>
+        </div>
+      )}
+    </section>
+  )
+}
+
 export interface SettingsModalProps {
   status: AccountStatus | null
   loggingOut: boolean
@@ -1165,6 +1345,7 @@ export function SettingsModal({
                     </>
                   )}
                 </div>
+                <CloudAccountSection t={t} />
               </>
             )}
             {section === 'aiModel' && <AiModelPane t={t} />}

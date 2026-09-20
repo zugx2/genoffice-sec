@@ -467,6 +467,45 @@
   gap: 8px;
 }
 
+/* ── Cloud account section (device login) ── */
+
+.set-cloud {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 14px;
+}
+
+/* the device-flow user code: prominent and copyable, always shown verbatim */
+.set-cloud-code {
+  padding: 6px 12px;
+  border-radius: 8px;
+  background: var(--surface-subtle);
+  color: var(--text-primary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 18px;
+  letter-spacing: 0.06em;
+  line-height: 1.4;
+  user-select: text;
+}
+
+/* credentials would land in a plain local file (no safeStorage/keyring) */
+.set-cloud-warning {
+  padding: 8px 10px;
+  border: 1px solid var(--danger-border);
+  border-radius: 8px;
+  background: var(--danger-bg);
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.set-cloud-error {
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 /* ── AI model pane ── */
 
 .set-input {
