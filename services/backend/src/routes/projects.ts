@@ -13,8 +13,9 @@
  */
 
 import type { FastifyInstance, FastifyPluginAsync } from 'fastify'
-import { notFound } from '../errors.js'
+import { notFound, versionConflict } from '../errors.js'
 import type { ProjectRecord } from '../storage/store.js'
+import { ifMatchVersion } from './if-match.js'
 import { requireSub } from './sub.js'
 
 /** Project as returned by GET/PUT (full record, `ProjectData` + version). */
@@ -104,6 +105,13 @@ export const projectRoutes: FastifyPluginAsync = async (app: FastifyInstance): P
     },
     async (request) => {
       const sub = requireSub(request)
+      const expected = ifMatchVersion(request)
+      if (expected !== undefined) {
+        // guard before mutating: an older read than the stored version is a
+        // 409 (missing/foreign still 404s via the update below)
+        const current = app.store.getProject(sub, request.params.projectId)
+        if (current !== null && current.version !== expected) throw versionConflict()
+      }
       const body = request.body as { name: string; files: string[] }
       const project = app.store.updateProject(
         sub,
@@ -121,6 +129,11 @@ export const projectRoutes: FastifyPluginAsync = async (app: FastifyInstance): P
     { preHandler: [app.authenticate], schema: { params: idParamSchema } },
     async (request, reply) => {
       const sub = requireSub(request)
+      const expected = ifMatchVersion(request)
+      if (expected !== undefined) {
+        const current = app.store.getProject(sub, request.params.projectId)
+        if (current !== null && current.version !== expected) throw versionConflict()
+      }
       if (!app.store.deleteProject(sub, request.params.projectId)) throw notFound()
       return reply.code(204).send()
     },

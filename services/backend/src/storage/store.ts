@@ -378,6 +378,16 @@ export class BackendStore {
   }
 
   /**
+   * Current `version` of the chat, or null when the chat — or its project —
+   * is not this sub's. The `If-Match` conflict guard reads it without
+   * loading the message list.
+   */
+  chatVersion(sub: string, projectId: string, chatId: string): number | null {
+    const row = this.#chatRow(sub, projectId, chatId)
+    return row === undefined ? null : row.version
+  }
+
+  /**
    * Full replace of the message list. The store assigns `seq` (1..n by
    * array position) and `ts` (client-provided value or now); `version` and
    * `updatedAt` bump. Null when the chat/project is not this sub's.

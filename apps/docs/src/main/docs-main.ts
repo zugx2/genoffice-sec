@@ -63,7 +63,8 @@ import {
 } from '@genoffice/electron-utils'
 import { configureMetricsCache, familyVerticalMetrics } from '@genoffice/font-metrics'
 import { createI18n, getUiLang, normalizeLang, setUiLang } from '@genoffice/i18n'
-import { ProjectStore } from '@genoffice/project-store'
+import { LocalProjectApi, ProjectStore } from '@genoffice/project-store'
+import type { ProjectApi } from '@genoffice/project-store'
 import type {
   IpcMainInvokeEvent,
   MenuItemConstructorOptions,
@@ -3108,10 +3109,42 @@ export function registerAiIpc(): void {
 
 let projectStore: ProjectStore | null = null
 let projectIpcRegistered = false
+/**
+ * The ProjectApi the `project:*` handlers serve. Local by default; the shell
+ * installs a routing implementation (remote while a cloud session is active,
+ * local otherwise — docs/cloud-backend-auth.md "Phase 6 conflict & routing
+ * policy"). Standalone apps never install one and stay local.
+ */
+let projectApi: ProjectApi | null = null
+let localProjectApi: ProjectApi | null = null
 
 function getProjectStore(): ProjectStore {
   if (!projectStore) projectStore = new ProjectStore(app.getPath('userData'))
   return projectStore
+}
+
+/**
+ * The local ProjectApi over the one ProjectStore instance this module owns
+ * (the same store the projects UI and rename hooks use) — also the fallback
+ * leg the shell's routing layer delegates to.
+ */
+export function getLocalProjectApi(): ProjectApi {
+  return (localProjectApi ??= new LocalProjectApi(getProjectStore()))
+}
+
+/** The live ProjectApi — the local adapter until the shell routes otherwise. */
+function getProjectApi(): ProjectApi {
+  return projectApi ?? getLocalProjectApi()
+}
+
+/**
+ * Installs the ProjectApi the `project:*` handlers serve (the shell's
+ * remote/local routing layer), or restores the local adapter on `null`.
+ * Takes effect for every later request; sheets' sessionId resolution stays
+ * in the handlers either way.
+ */
+export function setProjectApi(api: ProjectApi | null): void {
+  projectApi = api
 }
 
 /**
@@ -3166,7 +3199,10 @@ export function projectFileRenamed(oldPath: string, newPath: string): void {
 
 /**
  * Register the project:* IPC handlers (all three apps share the same channel names).
- * Idempotency guard: registered only once in shell mode.
+ * The handlers resolve sheets sessionIds to paths (the main process alone holds
+ * that map) and delegate everything else to the live ProjectApi — the local
+ * adapter, or the shell's remote/local routing layer once installed
+ * (setProjectApi). Idempotency guard: registered only once in shell mode.
  */
 export function registerProjectIpc(): void {
   if (projectIpcRegistered) return
@@ -3176,19 +3212,11 @@ export function registerProjectIpc(): void {
   ipcMain.handle(
     'project:resolveChat',
     (event, args: { filePath: string | null; tempChatId?: string; sessionId?: string }) => {
-      const store = getProjectStore()
-      store.ensureDefaultProject()
       let resolvedPath = args.filePath
       if (!resolvedPath && args.sessionId && sessionPathResolver) {
         resolvedPath = sessionPathResolver(event.sender.id, args.sessionId)
       }
-      if (!resolvedPath) {
-        return {
-          projectId: 'default',
-          chatId: args.tempChatId ?? `unsaved-${Date.now()}`,
-        }
-      }
-      return store.resolveChatForFile(resolvedPath)
+      return getProjectApi().resolveChat({ ...args, filePath: resolvedPath })
     },
   )
 
@@ -3213,16 +3241,7 @@ export function registerProjectIpc(): void {
         scope?: { label: string; text?: string }
       },
     ) => {
-      const store = getProjectStore()
-      const msg: Parameters<ProjectStore['appendChatMessage']>[2] = {
-        role: args.role,
-        text: args.text,
-      }
-      if (args.tools) msg.tools = args.tools
-      if (args.attachments) msg.attachments = args.attachments
-      if (args.scope) msg.scope = args.scope
-
-      store.appendChatMessage(args.projectId, args.chatId, msg)
+      return getProjectApi().appendChat(args)
     },
   )
 
@@ -3237,8 +3256,7 @@ export function registerProjectIpc(): void {
         limit?: number
       },
     ) => {
-      const store = getProjectStore()
-      return store.loadChat(args.projectId, args.chatId, args.limit ?? 200)
+      return getProjectApi().loadChat(args)
     },
   )
 
@@ -3255,16 +3273,15 @@ export function registerProjectIpc(): void {
         sessionId?: string
       },
     ) => {
-      const store = getProjectStore()
       let path = args.newFilePath ?? null
       if (!path && args.sessionId && sessionPathResolver) {
         path = sessionPathResolver(event.sender.id, args.sessionId)
       }
-      if (path) {
-        return store.rebindChatToFile(args.projectId, args.tempChatId, path)
-      }
-      if (args.newChatId) store.rebindChat(args.projectId, args.tempChatId, args.newChatId)
-      return { projectId: args.projectId, chatId: args.newChatId ?? args.tempChatId }
+      return getProjectApi().rebindChat({
+        ...args,
+        newFilePath: path ?? undefined,
+        sessionId: undefined,
+      })
     },
   )
 }

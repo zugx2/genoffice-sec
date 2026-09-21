@@ -25,3 +25,17 @@ export class ApiError extends Error {
 export function notFound(): ApiError {
   return new ApiError(404, 'not_found', 'resource not found')
 }
+
+/**
+ * 409 for a version-guarded mutation: the request carried an `If-Match`
+ * version older than the stored one, so another writer got there first.
+ * Clients re-read and decide (Phase 6 conflict policy — no server merge).
+ */
+export function versionConflict(): ApiError {
+  return new ApiError(409, 'version_conflict', 'a newer version exists')
+}
+
+/** 400 for an `If-Match` header that is not a bare integer version. */
+export function badIfMatch(): ApiError {
+  return new ApiError(400, 'validation_failed', 'If-Match must be the integer version')
+}

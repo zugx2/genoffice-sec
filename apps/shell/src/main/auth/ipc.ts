@@ -96,6 +96,27 @@ const backendProbeResultSchema = z
 const noArguments = z.union([z.undefined(), z.null()])
 
 let sessionManager: AuthSessionManager | undefined
+/** The lazily-built backend client shared by every main-process consumer. */
+let sharedBackendClient: (() => Promise<BackendClient>) | undefined
+
+/**
+ * The live session manager — undefined until `registerAuthIpc` ran (and
+ * forever in a process that never registers auth). Main-process consumers
+ * (the project routing layer) use it as the session gate: a snapshot
+ * `status === 'authenticated'` means cloud mode is live.
+ */
+export function getAuthSessionManager(): AuthSessionManager | undefined {
+  return sessionManager
+}
+
+/**
+ * The shared backend client builder (SSRF-gated construction, Bearer +
+ * refresh-once-on-401). The same instance serves `auth:probe-backend` and
+ * the remote ProjectApi transport, so one construction gate covers both.
+ */
+export function getBackendClient(): Promise<BackendClient> | undefined {
+  return sharedBackendClient?.()
+}
 
 export function registerAuthIpc(deps: AuthIpcDeps = {}): void {
   if (sessionManager !== undefined) return // registration is idempotent
@@ -128,6 +149,8 @@ export function registerAuthIpc(deps: AuthIpcDeps = {}): void {
       baseUrl: config.backendUrl,
       session: manager,
     }))
+  // exposed for the other main-process consumers below (the shared instance)
+  sharedBackendClient = backend
 
   // session changes go to every webContents (home tab, editor tabs): the
   // session drives shared chrome, not just the pane that triggered it

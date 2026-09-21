@@ -18,6 +18,7 @@
  *    minted token → 200 and the identity matches the token's sub.
  * 5. asserts the projects/chats CRUD end-to-end as user A: create / list /
  *    get / update (version bump) / chat message replace / limit read /
+ *    If-Match version guard (stale → 409, fresh → 200, malformed → 400) /
  *    delete, then the same endpoints as user B against A's resources —
  *    every one must answer 404, byte-identical to a missing id.
  * 6. cleanup: closes the backend and deletes the throwaway DB dir.
@@ -371,12 +372,14 @@ async function api(
   path: string,
   token: string | null,
   body?: unknown,
+  ifMatch?: string,
 ): Promise<ApiResponse> {
   const res = await fetch(`${baseUrl}${path}`, {
     method,
     headers: {
       ...(token === null ? {} : { authorization: `Bearer ${token}` }),
       ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+      ...(ifMatch === undefined ? {} : { 'if-match': ifMatch }),
     },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   })
@@ -515,6 +518,76 @@ async function main(): Promise<void> {
       'chat list must include the chat with count',
     )
     log(`chats CRUD as A: create/replace/get/limit/list ok (${chatId})`)
+
+    // ── If-Match version guard (Phase 6b conflict policy) ──
+    // project at version 2, chat at version 2 from the writes above
+    const staleProject = await api(
+      'PUT',
+      `/projects/${projectId}`,
+      userA.accessToken,
+      { name: 'stale write', files: [] },
+      '1',
+    )
+    expect(
+      staleProject.status === 409 && staleProject.body.error.code === 'version_conflict',
+      `stale If-Match project PUT must 409 version_conflict (got ${staleProject.status})`,
+    )
+    const staleChat = await api(
+      'PUT',
+      `/projects/${projectId}/chats/${chatId}`,
+      userA.accessToken,
+      { messages: [{ role: 'user', text: 'stale write' }] },
+      '1',
+    )
+    expect(
+      staleChat.status === 409 && staleChat.body.error.code === 'version_conflict',
+      `stale If-Match chat PUT must 409 version_conflict (got ${staleChat.status})`,
+    )
+    const freshProject = await api(
+      'PUT',
+      `/projects/${projectId}`,
+      userA.accessToken,
+      { name: 'Integration Project v3', files: ['/tmp/integration.md'] },
+      '2',
+    )
+    expect(
+      freshProject.status === 200 && freshProject.body.version === 3,
+      'matching If-Match project PUT must 200 and bump to version 3',
+    )
+    const freshChat = await api(
+      'PUT',
+      `/projects/${projectId}/chats/${chatId}`,
+      userA.accessToken,
+      {
+        messages: [
+          { role: 'user', text: 'integration hello' },
+          { role: 'assistant', text: 'integration reply' },
+          { role: 'user', text: 'third message' },
+        ],
+      },
+      '2',
+    )
+    expect(
+      freshChat.status === 200 && freshChat.body.version === 3,
+      'matching If-Match chat PUT must 200 and bump to version 3',
+    )
+    const badIfMatch = await api(
+      'PUT',
+      `/projects/${projectId}`,
+      userA.accessToken,
+      { name: 'x', files: [] },
+      '"3"',
+    )
+    expect(
+      badIfMatch.status === 400 && badIfMatch.body.error.code === 'validation_failed',
+      'a non-integer If-Match must 400 validation_failed',
+    )
+    const chatStill = await api('GET', `/projects/${projectId}/chats/${chatId}`, userA.accessToken)
+    expect(
+      chatStill.status === 200 && chatStill.body.messageCount === 3,
+      'chat must carry the 3 guarded-write messages',
+    )
+    log('If-Match guard: stale → 409 version_conflict, fresh → 200+3, malformed → 400')
 
     // ── cross-user isolation: user B against user A's resources ──
     const bList = await api('GET', '/projects', userB.accessToken)

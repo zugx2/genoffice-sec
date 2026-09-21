@@ -63,6 +63,8 @@ interface InjectOptions {
   /** Bearer token; defaults to user A, `null` sends no credentials. */
   token?: string | null
   body?: unknown
+  /** optional `If-Match` version guard header (PUT/DELETE) */
+  ifMatch?: string
 }
 
 /** Inject a request as the given user (default: user A; `null` = anonymous). */
@@ -70,6 +72,7 @@ async function call(opts: InjectOptions): Promise<{ status: number; json: any; b
   const token = opts.token === undefined ? tokenA : opts.token
   const headers: Record<string, string> = token === null ? {} : { authorization: `Bearer ${token}` }
   if (opts.body !== undefined) headers['content-type'] = 'application/json'
+  if (opts.ifMatch !== undefined) headers['if-match'] = opts.ifMatch
   const res = await app.inject({
     method: opts.method as any,
     url: opts.url,
@@ -585,6 +588,151 @@ describe('validation (400) and auth (401)', () => {
       })
       expect(res.status, `limit=${limit}`).toBe(400)
     }
+  })
+})
+
+describe('If-Match version guard (Phase 6b conflict policy)', () => {
+  it('rejects a project PUT whose If-Match is older than the stored version (409)', async () => {
+    const id = await createProject('Guarded')
+    // another writer bumps the version to 2…
+    await call({ method: 'PUT', url: `/projects/${id}`, body: { name: 'Bumped', files: [] } })
+    // …then a stale client writes against its read of version 1
+    const stale = await call({
+      method: 'PUT',
+      url: `/projects/${id}`,
+      body: { name: 'Stale Write', files: [] },
+      ifMatch: '1',
+    })
+    expect(stale.status).toBe(409)
+    expect(stale.json).toEqual({
+      error: { code: 'version_conflict', message: expect.any(String) as string },
+    })
+    // no silent overwrite: the server keeps the newer write
+    const got = await call({ method: 'GET', url: `/projects/${id}` })
+    expect(got.json.name).toBe('Bumped')
+    expect(got.json.version).toBe(2)
+  })
+
+  it('accepts a project PUT whose If-Match matches the stored version', async () => {
+    const id = await createProject('Fresh Match')
+    const res = await call({
+      method: 'PUT',
+      url: `/projects/${id}`,
+      body: { name: 'Winning Write', files: ['/tmp/x.md'] },
+      ifMatch: '1',
+    })
+    expect(res.status).toBe(200)
+    expect(res.json.version).toBe(2)
+    expect(res.json.name).toBe('Winning Write')
+  })
+
+  it('rejects a chat PUT whose If-Match is older than the stored version (409)', async () => {
+    const projectId = await createProject('Chat Guard')
+    const chatId = (await call({ method: 'POST', url: `/projects/${projectId}/chats` })).json.id
+    await call({
+      method: 'PUT',
+      url: `/projects/${projectId}/chats/${chatId}`,
+      body: { messages: [{ role: 'user', text: 'device 1' }] },
+    })
+    const stale = await call({
+      method: 'PUT',
+      url: `/projects/${projectId}/chats/${chatId}`,
+      body: { messages: [{ role: 'user', text: 'device 2 stale' }] },
+      ifMatch: '1',
+    })
+    expect(stale.status).toBe(409)
+    expect(stale.json.error.code).toBe('version_conflict')
+    const got = await call({ method: 'GET', url: `/projects/${projectId}/chats/${chatId}` })
+    expect(got.json.messages).toEqual([expect.objectContaining({ text: 'device 1' }) as never])
+  })
+
+  it('accepts a chat PUT whose If-Match matches, and bumps the version', async () => {
+    const projectId = await createProject('Chat Fresh')
+    const chatId = (await call({ method: 'POST', url: `/projects/${projectId}/chats` })).json.id
+    const res = await call({
+      method: 'PUT',
+      url: `/projects/${projectId}/chats/${chatId}`,
+      body: { messages: [{ role: 'user', text: 'ok' }] },
+      ifMatch: '1',
+    })
+    expect(res.status).toBe(200)
+    expect(res.json.version).toBe(2)
+  })
+
+  it('guards deletes the same way (409 on stale, 204 on match)', async () => {
+    const projectId = await createProject('Delete Guard')
+    const chatId = (await call({ method: 'POST', url: `/projects/${projectId}/chats` })).json.id
+    await call({
+      method: 'PUT',
+      url: `/projects/${projectId}/chats/${chatId}`,
+      body: { messages: [{ role: 'user', text: 'x' }] },
+    })
+    const staleChat = await call({
+      method: 'DELETE',
+      url: `/projects/${projectId}/chats/${chatId}`,
+      ifMatch: '1',
+    })
+    expect(staleChat.status).toBe(409)
+    expect(staleChat.json.error.code).toBe('version_conflict')
+    const okChat = await call({
+      method: 'DELETE',
+      url: `/projects/${projectId}/chats/${chatId}`,
+      ifMatch: '2',
+    })
+    expect(okChat.status).toBe(204)
+
+    await call({ method: 'PUT', url: `/projects/${projectId}`, body: { name: 'v2', files: [] } })
+    const staleProject = await call({
+      method: 'DELETE',
+      url: `/projects/${projectId}`,
+      ifMatch: '1',
+    })
+    expect(staleProject.status).toBe(409)
+    const stillThere = await call({ method: 'GET', url: `/projects/${projectId}` })
+    expect(stillThere.status).toBe(200)
+    const okProject = await call({ method: 'DELETE', url: `/projects/${projectId}`, ifMatch: '2' })
+    expect(okProject.status).toBe(204)
+  })
+
+  it('rejects a non-integer If-Match with 400 validation_failed', async () => {
+    const id = await createProject('Bad If-Match')
+    for (const bad of ['"1"', '*', '1, 2', '-1', 'v1']) {
+      const res = await call({
+        method: 'PUT',
+        url: `/projects/${id}`,
+        body: { name: 'x', files: [] },
+        ifMatch: bad,
+      })
+      expect(res.status, `If-Match=${JSON.stringify(bad)}`).toBe(400)
+      expect(res.json.error.code).toBe('validation_failed')
+    }
+  })
+
+  it('keeps plain last-writer-wins when If-Match is absent', async () => {
+    const id = await createProject('No Guard')
+    await call({ method: 'PUT', url: `/projects/${id}`, body: { name: 'first', files: [] } })
+    const res = await call({
+      method: 'PUT',
+      url: `/projects/${id}`,
+      body: { name: 'second', files: [] },
+    })
+    expect(res.status).toBe(200)
+    expect(res.json.version).toBe(3)
+    expect(res.json.name).toBe('second')
+  })
+
+  it('still answers 404 (not 409) for a missing/foreign id with any If-Match', async () => {
+    const missing = '00000000-0000-4000-8000-000000000000'
+    const put = await call({
+      method: 'PUT',
+      url: `/projects/${missing}`,
+      body: { name: 'x', files: [] },
+      ifMatch: '99',
+    })
+    expect(put.status).toBe(404)
+    expect(put.json.error.code).toBe('not_found')
+    const del = await call({ method: 'DELETE', url: `/projects/${missing}`, ifMatch: '99' })
+    expect(del.status).toBe(404)
   })
 })
 

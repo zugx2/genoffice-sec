@@ -29,6 +29,7 @@
     "@genoffice/cli": "*",
     "@genoffice/i18n": "*",
     "@genoffice/pipelines": "*",
+    "@genoffice/project-store": "*",
     "@genoffice/pptx-engine": "*",
     "@genoffice/pptx-render": "*",
     "@genoffice/sheets": "*",

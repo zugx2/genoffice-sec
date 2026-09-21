@@ -43,17 +43,17 @@ import type {
 // ────────────────────────────────────────────────────────────
 
 /** Max stored characters for a single tool input/output field */
-const TOOL_FIELD_MAX_CHARS = 16_000
+export const TOOL_FIELD_MAX_CHARS = 16_000
 
 /**
  * Max stored characters for message text. A model that falls into a repetition
  * loop can emit megabytes in one turn; stored whole it would both bloat the
  * JSONL line and be replayed into the model context when the file reopens.
  */
-const TEXT_MAX_CHARS = 32_000
+export const TEXT_MAX_CHARS = 32_000
 /** Max stored characters of a scope excerpt */
-const SCOPE_TEXT_MAX_CHARS = 400
-const TEXT_TRUNCATED_MARK = '\n\n[truncated]'
+export const SCOPE_TEXT_MAX_CHARS = 400
+export const TEXT_TRUNCATED_MARK = '\n\n[truncated]'
 
 function nowIso(): string {
   return new Date().toISOString()

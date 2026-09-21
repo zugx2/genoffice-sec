@@ -70,7 +70,14 @@ import { startControlServer, type ControlServer } from './control-server'
 import { controlHandler } from './control-handlers'
 import { installCliLinkBestEffort } from './cli-link'
 import { registerIntegrationsIpc } from './integrations-ipc'
-import { registerAuthIpc, restoreAuthSession } from './auth/ipc'
+import {
+  getAuthSessionManager,
+  getBackendClient,
+  registerAuthIpc,
+  restoreAuthSession,
+} from './auth/ipc'
+import { RoutingProjectApi } from './auth/project-routing'
+import { RemoteProjectApi } from '@genoffice/project-store'
 import {
   ANALYTICS_ENABLED_KEY,
   analyticsEnabledFrom,
@@ -121,6 +128,8 @@ import {
   replaceRecentFile,
   registerAiIpc,
   registerProjectIpc,
+  getLocalProjectApi,
+  setProjectApi,
   toggleStarredFile,
   registerDocsIpc,
   exportDocsHeadless,
@@ -4741,6 +4750,35 @@ installNavigationGuard(app)
 installContextMenu(app, () => contextMenuLabels(currentLang()))
 registerAiIpc()
 registerProjectIpc()
+// cloud project-store routing (docs/cloud-backend-auth.md, "Phase 6 conflict
+// & routing policy"): the project:* handlers serve the local adapter until a
+// cloud session is live, then the remote one over the shared backend client's
+// transport; a request the remote store cannot serve (offline, dead session)
+// falls back to local for that request only. The handlers read the api per
+// request, so installing it here — before any webContents exist — is safe.
+setProjectApi(
+  new RoutingProjectApi({
+    local: getLocalProjectApi(),
+    sessionActive: () => getAuthSessionManager()?.snapshot().status === 'authenticated',
+    remote: async () => {
+      try {
+        const client = await getBackendClient()
+        if (client === undefined) return undefined
+        // the remote adapter rides the shared client's transport (Bearer +
+        // refresh-once-on-401, the SSRF-gated construction); its client-side
+        // id index lives next to the local store's data
+        return new RemoteProjectApi({
+          transport: client.fetch.bind(client),
+          indexPath: join(app.getPath('userData'), 'remote-project-index.json'),
+        })
+      } catch (error) {
+        // config-gated client construction: local-only (logged main-side)
+        console.warn('[project-routing] no backend client, staying local:', error)
+        return undefined
+      }
+    },
+  }),
+)
 registerDocsIpc()
 registerHomeIpc()
 // cloud-auth session (docs/cloud-backend-auth.md): the module owns its IPC

@@ -83,18 +83,18 @@ envelope `{error: {code, message}}` (401s additionally carry
 
 ### Resources
 
-| Method   | Path                                 | Body / notes                                             | Success                   |
-| -------- | ------------------------------------ | -------------------------------------------------------- | ------------------------- |
-| `GET`    | `/projects`                          | list (info records, no `files`; stable `(createdAt,id)`) | `200 {projects:[…]}`      |
-| `POST`   | `/projects`                          | `{name}` (non-blank, ≤ 200 chars)                        | `201` full record         |
-| `GET`    | `/projects/:projectId`               | full record incl. `files`                                | `200` / `404`             |
-| `PUT`    | `/projects/:projectId`               | `{name, files}` — full-object replace                    | `200` / `404`             |
-| `DELETE` | `/projects/:projectId`               | hard delete, cascades chats + messages                   | `204` / `404`             |
-| `GET`    | `/projects/:projectId/chats`         | chat list (id/createdAt/updatedAt/version/messageCount)  | `200 {chats:[…]}` / `404` |
-| `POST`   | `/projects/:projectId/chats`         | no body — creates an empty chat                          | `201` / `404`             |
-| `GET`    | `/projects/:projectId/chats/:chatId` | `?limit=N` → most recent N messages (ascending seq)      | `200` / `404`             |
-| `PUT`    | `/projects/:projectId/chats/:chatId` | `{messages:[…]}` — full replace of the message list      | `200` / `404`             |
-| `DELETE` | `/projects/:projectId/chats/:chatId` | hard delete                                              | `204` / `404`             |
+| Method   | Path                                 | Body / notes                                                | Success                   |
+| -------- | ------------------------------------ | ----------------------------------------------------------- | ------------------------- |
+| `GET`    | `/projects`                          | list (info records, no `files`; stable `(createdAt,id)`)    | `200 {projects:[…]}`      |
+| `POST`   | `/projects`                          | `{name}` (non-blank, ≤ 200 chars)                           | `201` full record         |
+| `GET`    | `/projects/:projectId`               | full record incl. `files`                                   | `200` / `404`             |
+| `PUT`    | `/projects/:projectId`               | `{name, files}` — full-object replace; optional `If-Match`  | `200` / `404` / `409`     |
+| `DELETE` | `/projects/:projectId`               | hard delete, cascades chats + messages; optional `If-Match` | `204` / `404` / `409`     |
+| `GET`    | `/projects/:projectId/chats`         | chat list (id/createdAt/updatedAt/version/messageCount)     | `200 {chats:[…]}` / `404` |
+| `POST`   | `/projects/:projectId/chats`         | no body — creates an empty chat                             | `201` / `404`             |
+| `GET`    | `/projects/:projectId/chats/:chatId` | `?limit=N` → most recent N messages (ascending seq)         | `200` / `404`             |
+| `PUT`    | `/projects/:projectId/chats/:chatId` | `{messages:[…]}` — full replace; optional `If-Match`        | `200` / `404` / `409`     |
+| `DELETE` | `/projects/:projectId/chats/:chatId` | hard delete; optional `If-Match`                            | `204` / `404` / `409`     |
 
 The model mirrors `packages/project-store` (the local filesystem store):
 a project is `{name, files}`; a chat belongs to exactly one project and is
@@ -110,11 +110,26 @@ body are rejected (`additionalProperties: false`, no type coercion).
 Every mutable record carries `version` (monotonic integer, starts at 1) and
 `updatedAt` (UTC ISO). Each successful mutation — `PUT` on a project or
 chat — increments `version` and refreshes `updatedAt`. `POST` returns
-`version: 1`; `DELETE` removes the record entirely. There is no `ETag` /
-`If-Match` in this phase: a client detects a conflict by comparing the
-`version` it last saw with the one a `PUT` response (or a re-`GET`) reports,
-and must re-read + merge before overwriting. Message replaces are
-last-writer-wins per version bump.
+`version: 1`; `DELETE` removes the record entirely.
+
+`PUT` and `DELETE` take an optional `If-Match: <version>` header — the bare
+integer `version` the client last saw (there is no ETag; the version is the
+entity tag). The server compares it with the stored version **before**
+mutating:
+
+- header absent → last-writer-wins (Phase 6a behavior, unchanged);
+- header equals the stored `version` → the mutation runs;
+- header is older → `409 {error:{code:"version_conflict"}}` — another
+  writer got there first; the stored record is untouched and the client
+  re-reads and decides (the server never merges);
+- anything but a bare non-negative integer (`"3"`, `*`, a list) → `400
+validation_failed`.
+
+A missing or foreign id still answers `404` regardless of `If-Match` — the
+guard never turns absence into a conflict and never leaks existence. The
+client-side policy built on this (remote `ProjectApi` in
+`packages/project-store`, shell routing) is documented in
+`docs/cloud-backend-auth.md` ("Phase 6 conflict & routing policy").
 
 ### Validation limits
 
@@ -204,7 +219,8 @@ real JWKS endpoint over HTTP, so signature failures, claim rejections, and
   decisions.
 - Errors are stable JSON codes (`missing_token`, `invalid_token`,
   `validation_unavailable`, `not_found`, `validation_failed`,
-  `bad_request`, `internal_error`) in the uniform `{error:{code,message}}`
+  `bad_request`, `version_conflict`, `internal_error`) in the uniform
+  `{error:{code,message}}`
   envelope; 401s carry `WWW-Authenticate: Bearer`. No token material is ever
   echoed in a response or a log line; 500s never leak internals.
 - Ownership scoping is structural: `sub` comes only from the verified

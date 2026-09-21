@@ -17,8 +17,9 @@
  */
 
 import type { FastifyInstance, FastifyPluginAsync } from 'fastify'
-import { notFound } from '../errors.js'
+import { notFound, versionConflict } from '../errors.js'
 import type { ChatMessageInput, ChatRecord, ChatSummaryRecord } from '../storage/store.js'
+import { ifMatchVersion } from './if-match.js'
 import { requireSub } from './sub.js'
 
 /** Chat as returned by GET/PUT/POST (summary + messages). */
@@ -164,6 +165,13 @@ export const chatRoutes: FastifyPluginAsync = async (app: FastifyInstance): Prom
     },
     async (request) => {
       const sub = requireSub(request)
+      const expected = ifMatchVersion(request)
+      if (expected !== undefined) {
+        // guard before mutating: an older read than the stored version is a
+        // 409 (missing/foreign still 404s via the replace below)
+        const current = app.store.chatVersion(sub, request.params.projectId, request.params.chatId)
+        if (current !== null && current !== expected) throw versionConflict()
+      }
       const body = request.body as { messages: ChatMessageInput[] }
       const chat = app.store.updateChat(
         sub,
@@ -181,6 +189,11 @@ export const chatRoutes: FastifyPluginAsync = async (app: FastifyInstance): Prom
     { preHandler: [app.authenticate], schema: { params: chatParamsSchema } },
     async (request, reply) => {
       const sub = requireSub(request)
+      const expected = ifMatchVersion(request)
+      if (expected !== undefined) {
+        const current = app.store.chatVersion(sub, request.params.projectId, request.params.chatId)
+        if (current !== null && current !== expected) throw versionConflict()
+      }
       if (!app.store.deleteChat(sub, request.params.projectId, request.params.chatId)) {
         throw notFound()
       }

@@ -429,7 +429,54 @@ standalone; later phases build on earlier ones.
 - [ ] Backend: projects/chats CRUD endpoints scoped by `sub`.
 - [ ] Remote `ProjectApi` implementation in `packages/project-store`.
 - [ ] Shell routing: remote when session active, local fallback offline;
-      conflict/merge policy documented and tested.
+      conflict/merge policy documented (below) and tested.
+
+#### Phase 6 conflict & routing policy (projects/chats)
+
+Implemented by Phase 6b (`packages/project-store/src/remote.ts`,
+`apps/shell/src/main/auth/project-routing.ts`, docs-main's `setProjectApi`
+seam); the server side is `services/backend`'s `If-Match` version guard
+(see its README, "Version semantics").
+
+**Routing.** One `ProjectApi` serves the `project:*` channels. Per request:
+session active (`auth` session manager snapshot `authenticated`) → the
+remote adapter; no session → the local store, byte-for-byte the pre-cloud
+behavior. The switch is observable main-side: `projectStoreSource()` (live
+store) and `lastRequestSource()` (which store actually served, including
+fallbacks). A project/chat created remotely is remote data — nothing
+migrates across stores in this phase (mode-switch migration is a Phase 7
+concern).
+
+**Offline fallback is request-level.** If the remote attempt fails with
+`RemoteProjectUnavailableError` (transport failure, 5xx, dead session —
+anything that is not a definitive server answer), that one request is
+re-served from the local store and flagged `'remote-fallback-local'`; the
+next request retries remote. There is no mode switch and no background
+sync — a message appended during an outage is stored locally only and
+nothing uploads it later.
+
+**Conflicts.** Every mutation the remote adapter makes is a read-modify-write
+guarded by the version it read (`If-Match: <version>` on PUT/DELETE). If
+another writer bumped the version first, the server answers
+`409 version_conflict` and the adapter surfaces a typed
+`RemoteProjectConflictError`. There is **no automatic merge and no silent
+overwrite**: a conflicted append is dropped and the caller sees the typed
+error (the AI panel's existing `.catch` treats history as best-effort, the
+same as a local write failure). Mutations are serialized per adapter, so
+one device's own back-to-back messages never conflict with each other —
+only with another device. The one deliberate retry-shaped case: when a
+mapped chat row has vanished server-side, the adapter starts a fresh row
+rather than failing every later operation on that id (self-healing, no
+user data is merged).
+
+**Id mapping.** The backend assigns UUID ids; the renderer keeps using the
+local store's stable per-file chat ids (sha256 of the path) and `'default'`
+as the project id. A client-side index (`remote-project-index.json` under
+`userData`, the remote twin of the local `index.json`) records which server
+chat UUID backs each id. `resolveChat` itself stays pure (no request);
+chat rows are created lazily on first append. Renaming a file mid-session
+starts a new remote chat (the local store's rename re-keying has no remote
+counterpart yet — a Phase 7 follow-up alongside document modes).
 
 ### Phase 7 — document storage modes
 
