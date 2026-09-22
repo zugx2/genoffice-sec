@@ -25,6 +25,7 @@
     "@genoffice/auth": "*",
     "@genoffice/docs": "*",
     "@genoffice/docx-engine": "*",
+    "@genoffice/document-store": "*",
     "@genoffice/electron-utils": "*",
     "@genoffice/cli": "*",
     "@genoffice/i18n": "*",
