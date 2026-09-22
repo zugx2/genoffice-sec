@@ -1,7 +1,8 @@
 /**
  * Integration check for the backend against the live Phase 0 Keycloak stack
- * (docs/cloud-backend-auth.md): whoami (Phase 4/5) plus the projects/chats
- * CRUD surface (Phase 6a).
+ * (docs/cloud-backend-auth.md): whoami (Phase 4/5), the projects/chats CRUD
+ * surface (Phase 6a), and the document endpoints with version history
+ * (Phase 7a).
  *
  * 1. boot check: probes Keycloak discovery; if it is down, boots the
  *    docker/keycloak compose stack via `sg docker -c` (this environment
@@ -13,7 +14,8 @@
  *    second user provisioned through the admin REST API so cross-user
  *    isolation runs against two different `sub`s.
  * 3. starts the backend in-process (buildApp + listen, ephemeral port),
- *    backed by a throwaway FILE database (exercises GENOFFICE_BACKEND_DB).
+ *    backed by a throwaway FILE database (GENOFFICE_BACKEND_DB) and a
+ *    throwaway document data dir (GENOFFICE_BACKEND_DATA_DIR).
  * 4. asserts GET /whoami: no token → 401 + WWW-Authenticate; with the
  *    minted token → 200 and the identity matches the token's sub.
  * 5. asserts the projects/chats CRUD end-to-end as user A: create / list /
@@ -21,7 +23,14 @@
  *    If-Match version guard (stale → 409, fresh → 200, malformed → 400) /
  *    delete, then the same endpoints as user B against A's resources —
  *    every one must answer 404, byte-identical to a missing id.
- * 6. cleanup: closes the backend and deletes the throwaway DB dir.
+ * 6. asserts the document endpoints end-to-end as user A: multipart create
+ *    of a small real file → byte-exact download → list → guarded PUT
+ *    (If-Match fresh → version 2, stale → 409) → conflict=copy as a NEW
+ *    document → version history + historical download → raw octet-stream
+ *    create; then user B probes A's document (metadata and bytes) — all
+ *    404 identical to a missing id — and finally the If-Match-guarded
+ *    DELETE (stale 409, matching 204, then 404).
+ * 7. cleanup: closes the backend and deletes the throwaway dir.
  *    Keycloak is left as found (the operator tears it down with
  *    `docker compose ... down -v`).
  *
@@ -391,6 +400,47 @@ function expect(cond: boolean, what: string): void {
   if (!cond) throw new Error(`check failed: ${what}`)
 }
 
+/**
+ * Raw (non-JSON) request against the backend under test — document uploads
+ * and downloads. `body` may be a FormData (multipart, the primary upload
+ * shape) or a Buffer (the octet-stream fallback).
+ */
+async function apiRaw(
+  method: string,
+  path: string,
+  token: string | null,
+  body?: FormData | Buffer,
+  ifMatch?: string,
+  contentType?: string,
+): Promise<{ status: number; bytes: Buffer; text: string; headers: Headers; json: any }> {
+  const res = await fetch(`${baseUrl}${path}`, {
+    method,
+    headers: {
+      ...(token === null ? {} : { authorization: `Bearer ${token}` }),
+      ...(ifMatch === undefined ? {} : { 'if-match': ifMatch }),
+      ...(contentType === undefined ? {} : { 'content-type': contentType }),
+    },
+    ...(body === undefined ? {} : { body: body as unknown as BodyInit }),
+  })
+  const bytes = Buffer.from(await res.arrayBuffer())
+  let json: any = undefined
+  try {
+    json = bytes.length === 0 ? undefined : JSON.parse(bytes.toString('utf8'))
+  } catch {
+    // byte payloads (downloads) are not JSON
+  }
+  return { status: res.status, bytes, text: bytes.toString('utf8'), headers: res.headers, json }
+}
+
+/** A multipart document upload body (the primary upload shape). */
+function documentForm(name: string, kind: string, bytes: Buffer, filename: string): FormData {
+  const form = new FormData()
+  form.append('name', name)
+  form.append('kind', kind)
+  form.append('file', new Blob([new Uint8Array(bytes)]), filename)
+  return form
+}
+
 // ─── Orchestration ─────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -402,10 +452,14 @@ async function main(): Promise<void> {
   if (userA.sub === userB.sub) throw new Error('isolation needs two distinct subs')
 
   // Start the backend in-process with dev issuer/audience defaults on an
-  // ephemeral port, backed by a throwaway FILE database so the integration
-  // run also covers the GENOFFICE_BACKEND_DB file path.
+  // ephemeral port, backed by a throwaway FILE database (exercises
+  // GENOFFICE_BACKEND_DB) and a throwaway document data dir
+  // (GENOFFICE_BACKEND_DATA_DIR).
   const dbDir = mkdtempSync(join(tmpdir(), 'genoffice-backend-it-'))
-  const config = loadConfig({ GENOFFICE_BACKEND_DB: join(dbDir, 'integration.db') })
+  const config = loadConfig({
+    GENOFFICE_BACKEND_DB: join(dbDir, 'integration.db'),
+    GENOFFICE_BACKEND_DATA_DIR: join(dbDir, 'documents'),
+  })
   const app = await buildApp({ config })
   baseUrl = await app.listen({ port: 0, host: '127.0.0.1' })
   log(`backend listening on ${baseUrl} (db ${config.dbPath})`)
@@ -659,6 +713,205 @@ async function main(): Promise<void> {
     const bCreate = await api('POST', '/projects', userB.accessToken, { name: 'B Own Project' })
     expect(bCreate.status === 201, 'B must create its own project')
     log('deletes + cascade + independent namespace ok')
+
+    // ── documents as user A (Phase 7a) ──
+    const anonUpload = await apiRaw(
+      'POST',
+      '/documents',
+      null,
+      documentForm('x.md', 'md', Buffer.from('x'), 'x.md'),
+    )
+    expect(
+      anonUpload.status === 401 && anonUpload.json.error.code === 'missing_token',
+      'anonymous document upload must 401 missing_token',
+    )
+
+    const docBytes = Buffer.from(
+      '# Integration note\n\nWritten by the Phase 7a integration check; downloaded bytes must match exactly.\n',
+    )
+    const docCreated = await apiRaw(
+      'POST',
+      '/documents',
+      userA.accessToken,
+      documentForm('integration-note.md', 'md', docBytes, 'integration-note.md'),
+    )
+    expect(
+      docCreated.status === 201 &&
+        docCreated.json.currentVersion === 1 &&
+        docCreated.json.size === docBytes.length,
+      `multipart document create must 201 with size (got ${docCreated.status} ${docCreated.text.slice(0, 120)})`,
+    )
+    const docId: string = docCreated.json.id
+
+    const downloaded = await apiRaw('GET', `/documents/${docId}`, userA.accessToken)
+    expect(
+      downloaded.status === 200 && downloaded.bytes.equals(docBytes),
+      'document download must round-trip the exact uploaded bytes',
+    )
+    expect(
+      downloaded.headers.get('etag') === '1' &&
+        (downloaded.headers.get('content-type') ?? '').startsWith('application/octet-stream'),
+      'download must carry the version as etag and octet-stream content type',
+    )
+
+    const docList = await api('GET', '/documents', userA.accessToken)
+    expect(
+      docList.status === 200 &&
+        docList.body.documents.some(
+          (d: any) => d.id === docId && d.currentVersion === 1 && d.size === docBytes.length,
+        ),
+      'document list must include the created document with metadata',
+    )
+    log(`documents as A: multipart create + byte-exact download + list ok (${docId})`)
+
+    // raw octet-stream fallback path
+    const rawBytes = Buffer.from('raw upload body\n')
+    const rawCreate = await apiRaw(
+      'POST',
+      '/documents?name=integration-raw.md&kind=md',
+      userA.accessToken,
+      rawBytes,
+      undefined,
+      'application/octet-stream',
+    )
+    expect(
+      rawCreate.status === 201 && rawCreate.json.size === rawBytes.length,
+      `raw octet-stream create must 201 (got ${rawCreate.status})`,
+    )
+    const rawBack = await apiRaw('GET', `/documents/${rawCreate.json.id}`, userA.accessToken)
+    expect(rawBack.bytes.equals(rawBytes), 'raw upload must round-trip its bytes')
+    await api('DELETE', `/documents/${rawCreate.json.id}`, userA.accessToken)
+    log('documents as A: raw octet-stream create + round-trip ok')
+
+    // version-checked update, 409, conflict copy, history
+    const v2Bytes = Buffer.from('# Integration note v2\n\nUpdated through a guarded PUT.\n')
+    const docPut = await apiRaw(
+      'PUT',
+      `/documents/${docId}`,
+      userA.accessToken,
+      documentForm('integration-note.md', 'md', v2Bytes, 'integration-note.md'),
+      '1',
+    )
+    expect(
+      docPut.status === 200 &&
+        docPut.json.currentVersion === 2 &&
+        docPut.json.size === v2Bytes.length,
+      `guarded PUT must 200 and append version 2 (got ${docPut.status})`,
+    )
+    const stalePut = await apiRaw(
+      'PUT',
+      `/documents/${docId}`,
+      userA.accessToken,
+      documentForm(
+        'integration-note.md',
+        'md',
+        Buffer.from('stale write\n'),
+        'integration-note.md',
+      ),
+      '1',
+    )
+    expect(
+      stalePut.status === 409 && stalePut.json.error.code === 'version_conflict',
+      `stale document PUT must 409 version_conflict (got ${stalePut.status})`,
+    )
+    const conflictCopy = await apiRaw(
+      'PUT',
+      `/documents/${docId}?conflict=copy`,
+      userA.accessToken,
+      documentForm(
+        'integration-note.md',
+        'md',
+        Buffer.from('my conflicting edit\n'),
+        'integration-note.md',
+      ),
+      '1',
+    )
+    expect(
+      conflictCopy.status === 201 &&
+        /^integration-note\.md \(conflict \d{4}-/.test(conflictCopy.json.name) &&
+        conflictCopy.json.id !== docId,
+      `conflict=copy must 201 a NEW document named "<name> (conflict <ts>)" (got ${conflictCopy.status})`,
+    )
+
+    const versions = await api('GET', `/documents/${docId}/versions`, userA.accessToken)
+    expect(
+      versions.status === 200 &&
+        Array.isArray(versions.body.versions) &&
+        versions.body.versions.length === 2 &&
+        versions.body.versions[0].version === 2 &&
+        versions.body.versions[1].version === 1,
+      'version history must list version, size, sha256, createdAt newest-first',
+    )
+    const oldVersion = await apiRaw('GET', `/documents/${docId}/versions/1`, userA.accessToken)
+    expect(
+      oldVersion.status === 200 && oldVersion.bytes.equals(docBytes),
+      'historical version download must return the original bytes',
+    )
+    log('documents as A: guarded PUT + 409 + conflict-copy + version history ok')
+
+    // ── cross-user isolation on documents (metadata AND bytes) ──
+    const missingDoc = await api(
+      'GET',
+      '/documents/00000000-0000-4000-8000-000000000000',
+      userB.accessToken,
+    )
+    const docProbes: Array<[string, string]> = [
+      ['GET', `/documents/${docId}`],
+      ['PUT', `/documents/${docId}`],
+      ['DELETE', `/documents/${docId}`],
+      ['GET', `/documents/${docId}/versions`],
+      ['GET', `/documents/${docId}/versions/1`],
+    ]
+    for (const [method, path] of docProbes) {
+      const res = await apiRaw(
+        method,
+        path,
+        userB.accessToken,
+        method === 'PUT'
+          ? documentForm('hijack.md', 'md', Buffer.from('hijack\n'), 'hijack.md')
+          : undefined,
+      )
+      expect(
+        res.status === 404 &&
+          (method === 'GET' || JSON.stringify(res.json) === JSON.stringify(missingDoc.body)),
+        `B ${method} ${path} must 404 identical to a missing id (got ${res.status})`,
+      )
+    }
+    const bDocList = await api('GET', '/documents', userB.accessToken)
+    expect(
+      bDocList.status === 200 &&
+        !bDocList.body.documents.some((d: any) => d.id === docId || d.id === conflictCopy.json.id),
+      "B's document list must not contain A's documents",
+    )
+    const aStill = await apiRaw('GET', `/documents/${docId}`, userA.accessToken)
+    expect(aStill.bytes.equals(v2Bytes), 'A document bytes must be untouched after B probes')
+    log(
+      `isolation: all ${docProbes.length} foreign document probes as B → 404 identical to missing`,
+    )
+
+    // ── document deletes: If-Match guarded (stale 409, matching 204) ──
+    const staleDelete = await api(
+      'DELETE',
+      `/documents/${docId}`,
+      userA.accessToken,
+      undefined,
+      '1',
+    )
+    expect(
+      staleDelete.status === 409 && staleDelete.body.error.code === 'version_conflict',
+      `stale document DELETE must 409 version_conflict (got ${staleDelete.status})`,
+    )
+    const stillThere = await apiRaw('GET', `/documents/${docId}`, userA.accessToken)
+    expect(stillThere.status === 200, 'document must survive a stale delete')
+    const deleted = await api('DELETE', `/documents/${docId}`, userA.accessToken, undefined, '2')
+    expect(deleted.status === 204, `matching document DELETE must 204 (got ${deleted.status})`)
+    const docGone = await api('GET', `/documents/${docId}`, userA.accessToken)
+    const versionsGone = await api('GET', `/documents/${docId}/versions`, userA.accessToken)
+    expect(
+      docGone.status === 404 && versionsGone.status === 404,
+      'deleted document and its history must 404',
+    )
+    log('documents as A: If-Match DELETE (stale 409 → matching 204) ok')
   } finally {
     await app.close()
     log('backend closed')

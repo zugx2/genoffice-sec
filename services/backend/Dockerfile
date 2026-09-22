@@ -36,10 +36,12 @@ COPY services/backend/package.json ./
 # majors between builds; accepted for this dev-only compose stack.
 RUN npm install --omit=dev --no-audit --no-fund --ignore-scripts
 COPY --from=build /app/services/backend/dist ./dist
-# The SQLite volume target (GENOFFICE_BACKEND_DB=/data/…), pre-owned by the
+# The SQLite volume target (GENOFFICE_BACKEND_DB=/data/…) and the document
+# byte tree (GENOFFICE_BACKEND_DATA_DIR=/data/documents), pre-owned by the
 # unprivileged runtime user — a fresh named volume inherits the image dir's
-# ownership on first mount, so the server can create its database file.
-RUN mkdir -p /data && chown node:node /data
+# ownership on first mount, so the server can create its database file and
+# the per-sub document directories.
+RUN mkdir -p /data/documents && chown -R node:node /data
 USER node
 EXPOSE 8000
 CMD ["node", "dist/server.js"]

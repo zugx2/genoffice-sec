@@ -1,3 +1,5 @@
+import { join } from 'node:path'
+
 /**
  * Typed, fail-fast service configuration.
  *
@@ -35,6 +37,12 @@ export interface BackendConfig {
    * it). Parent directories are created as needed.
    */
   dbPath: string
+  /**
+   * Root directory for document bytes (`<dataDir>/<sub>/<docId>/<version>`;
+   * see storage/document-files.ts). Default `<cwd>/data/documents` for dev
+   * runs; the compose service points it at the mounted volume.
+   */
+  dataDir: string
 }
 
 export const DEFAULT_PORT = 8000
@@ -43,6 +51,10 @@ export const DEFAULT_ISSUER = 'http://localhost:8080/realms/genoffice'
 export const DEFAULT_AUDIENCE = 'genoffice-backend'
 export const DEFAULT_CLOCK_SKEW_SECONDS = 30
 export const DEFAULT_DB_PATH = ':memory:'
+/** Dev default: `<cwd>/data/documents` (a dev run's cwd is services/backend). */
+export function defaultDataDir(): string {
+  return join(process.cwd(), 'data', 'documents')
+}
 
 /** Strip trailing slashes so two issuers differing only in them compare equal (packages/auth convention). */
 function stripTrailingSlashes(value: string): string {
@@ -135,10 +147,11 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   }
 
   const dbPath = readString(env, 'GENOFFICE_BACKEND_DB') ?? DEFAULT_DB_PATH
+  const dataDir = readString(env, 'GENOFFICE_BACKEND_DATA_DIR') ?? defaultDataDir()
 
   if (problems.length > 0) {
     throw new ConfigError(`Invalid backend configuration:\n  - ${problems.join('\n  - ')}`)
   }
 
-  return { port, host, issuer, audience, jwksUrl, clockSkewSeconds, dbPath }
+  return { port, host, issuer, audience, jwksUrl, clockSkewSeconds, dbPath, dataDir }
 }

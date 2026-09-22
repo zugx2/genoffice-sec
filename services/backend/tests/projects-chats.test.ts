@@ -9,6 +9,7 @@
  * missing ones (no existence leak).
  */
 
+import { tmpdir } from 'node:os'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { FastifyInstance } from 'fastify'
 import { buildApp } from '../src/app.js'
@@ -17,6 +18,12 @@ import { signAccessToken } from './helpers/tokens.js'
 
 const ISSUER = 'https://auth.test/realms/genoffice'
 const AUDIENCE = 'genoffice-backend'
+
+/**
+ * Document bytes are never touched by this suite (no /documents request is
+ * made), so the byte store's root is a throwaway path that stays uncreated.
+ */
+const UNUSED_DATA_DIR = `${tmpdir()}/genoffice-backend-unused-data`
 
 let jwks: JwksTestServer
 let key: TestKey
@@ -37,6 +44,7 @@ beforeAll(async () => {
       jwksUrl: jwks.url,
       clockSkewSeconds: 30,
       dbPath: ':memory:',
+      dataDir: UNUSED_DATA_DIR,
     },
     logger: false,
   })

@@ -1,3 +1,4 @@
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   ConfigError,
@@ -7,6 +8,7 @@ import {
   DEFAULT_HOST,
   DEFAULT_ISSUER,
   DEFAULT_PORT,
+  defaultDataDir,
   defaultJwksUrl,
   loadConfig,
 } from '../src/config.js'
@@ -21,12 +23,18 @@ describe('loadConfig defaults', () => {
       jwksUrl: `${DEFAULT_ISSUER}/protocol/openid-connect/certs`,
       clockSkewSeconds: DEFAULT_CLOCK_SKEW_SECONDS,
       dbPath: DEFAULT_DB_PATH,
+      dataDir: defaultDataDir(),
     })
+  })
+
+  it('defaults the document data dir to <cwd>/data/documents', () => {
+    expect(defaultDataDir()).toBe(join(process.cwd(), 'data', 'documents'))
   })
 
   it('treats empty-string variables as unset', () => {
     expect(loadConfig({ GENOFFICE_BACKEND_PORT: '' }).port).toBe(DEFAULT_PORT)
     expect(loadConfig({ GENOFFICE_BACKEND_DB: '' }).dbPath).toBe(DEFAULT_DB_PATH)
+    expect(loadConfig({ GENOFFICE_BACKEND_DATA_DIR: '' }).dataDir).toBe(defaultDataDir())
   })
 })
 
@@ -39,6 +47,7 @@ describe('loadConfig overrides', () => {
       GENOFFICE_BACKEND_AUDIENCE: 'other-audience',
       GENOFFICE_BACKEND_CLOCK_SKEW_SECONDS: '10',
       GENOFFICE_BACKEND_DB: '/var/lib/genoffice/backend.db',
+      GENOFFICE_BACKEND_DATA_DIR: '/var/lib/genoffice/documents',
     })
     expect(config).toEqual({
       port: 9001,
@@ -48,6 +57,7 @@ describe('loadConfig overrides', () => {
       jwksUrl: 'https://sso.example.com/realms/prod/protocol/openid-connect/certs',
       clockSkewSeconds: 10,
       dbPath: '/var/lib/genoffice/backend.db',
+      dataDir: '/var/lib/genoffice/documents',
     })
   })
 

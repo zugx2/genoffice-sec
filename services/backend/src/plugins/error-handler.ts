@@ -7,8 +7,9 @@
  * - route/handler `ApiError`s keep their own status + code;
  * - schema-validation failures (fastify/ajv) answer 400 `validation_failed`
  *   with the validator's message (request-derived, safe to expose);
- * - other fastify 4xx errors (malformed JSON body, unsupported media type…)
- *   keep their status under code `bad_request`;
+ * - other fastify 4xx errors (malformed JSON body, …) keep their status
+ *   under code `bad_request`, except 413 `payload_too_large` and 415
+ *   `unsupported_media_type` (both raised by document uploads);
  * - anything else is logged server-side and answered 500 `internal_error`
  *   with a generic message — internals never leak.
  *
@@ -48,8 +49,19 @@ export const errorHandlerPlugin = fp(
       }
       const status = replyStatus(err)
       if (status !== undefined && status < 500) {
-        // Fastify-level client errors (invalid JSON body, 413, 415, …).
-        void reply.code(status).send(errorBody('bad_request', err.message))
+        // Fastify-level client errors (invalid JSON body, …) keep their
+        // status under the `bad_request` umbrella code — except 413/415.
+        // Document uploads raise those through several layers (the streaming
+        // byte meter, the raw path's Content-Length precheck, fastify's own
+        // body-limit and content-type parser errors, the route's media-type
+        // check), so they get dedicated stable codes clients can branch on.
+        const code =
+          status === 413
+            ? 'payload_too_large'
+            : status === 415
+              ? 'unsupported_media_type'
+              : 'bad_request'
+        void reply.code(status).send(errorBody(code, err.message))
         return
       }
       request.log.error(

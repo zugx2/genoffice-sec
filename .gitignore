@@ -26,6 +26,10 @@ electron-builder.env
 /*.zip
 /windows/
 
+# Dev-run backend document bytes (GENOFFICE_BACKEND_DATA_DIR default is
+# <cwd>/data/documents; see services/backend/README.md)
+/services/backend/data/
+
 # Playwright artifacts
 /test-results/
 

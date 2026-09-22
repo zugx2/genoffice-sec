@@ -13,6 +13,7 @@ import { errorHandlerPlugin } from './plugins/error-handler.js'
 import { storagePlugin } from './plugins/storage.js'
 import { verifyAuth } from './plugins/verify-auth.js'
 import { chatRoutes } from './routes/chats.js'
+import { documentRoutes } from './routes/documents.js'
 import { projectRoutes } from './routes/projects.js'
 import { whoamiRoutes } from './routes/whoami.js'
 
@@ -31,6 +32,12 @@ export interface BuildAppOptions {
    * to exercise rotation without waiting out the cooldown.
    */
   jwksCooldownMs?: number
+  /**
+   * Document upload cap override, in bytes. Production keeps the documented
+   * 200 MiB (`MAX_DOCUMENT_BYTES`); tests shrink it so the 413 path is
+   * exercisable without allocating 200 MiB.
+   */
+  maxDocumentBytes?: number
 }
 
 export async function buildApp(options: BuildAppOptions): Promise<FastifyInstance> {
@@ -63,10 +70,15 @@ export async function buildApp(options: BuildAppOptions): Promise<FastifyInstanc
     clockSkewSeconds: config.clockSkewSeconds,
     jwksCooldownMs: options.jwksCooldownMs,
   })
-  await app.register(storagePlugin, { dbPath: config.dbPath })
+  await app.register(storagePlugin, {
+    dbPath: config.dbPath,
+    dataDir: config.dataDir,
+    maxDocumentBytes: options.maxDocumentBytes,
+  })
   await app.register(whoamiRoutes)
   await app.register(projectRoutes)
   await app.register(chatRoutes)
+  await app.register(documentRoutes)
 
   return app
 }

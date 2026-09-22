@@ -13,13 +13,26 @@ export {
   DEFAULT_HOST,
   DEFAULT_ISSUER,
   DEFAULT_PORT,
+  defaultDataDir,
   defaultJwksUrl,
   loadConfig,
   type BackendConfig,
 } from './config.js'
-export { ApiError, notFound } from './errors.js'
+export {
+  ApiError,
+  notFound,
+  payloadTooLarge,
+  unsupportedMediaType,
+  versionConflict,
+} from './errors.js'
 export { storagePlugin, type StorageOptions } from './plugins/storage.js'
-export { BackendStore } from './storage/store.js'
+export {
+  DocumentFileMissingError,
+  DocumentFileStore,
+  DocumentIntegrityError,
+  MAX_DOCUMENT_BYTES,
+} from './storage/document-files.js'
+export { BackendStore, MAX_DOCUMENT_VERSIONS } from './storage/store.js'
 export type {
   ChatAttachment,
   ChatMessage,
@@ -27,9 +40,13 @@ export type {
   ChatRecord,
   ChatScope,
   ChatSummaryRecord,
+  DocumentRecord,
+  DocumentSummaryRecord,
+  DocumentVersionRecord,
   ProjectRecord,
   ToolActivity,
 } from './storage/store.js'
+export { DOCUMENT_KINDS, documentRoutes, type DocumentKind } from './routes/documents.js'
 export {
   verifyAuth,
   type AccessTokenClaims,

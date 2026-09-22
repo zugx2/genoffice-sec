@@ -49,6 +49,9 @@ services:
       # SQLite file on a named volume, so backend data survives container
       # restarts (a plain `down` keeps volumes; `down -v` wipes everything).
       GENOFFICE_BACKEND_DB: /data/genoffice-backend.db
+      # Document bytes live on the same volume, under a per-sub tree:
+      # /data/documents/<sub>/<documentId>/<version> (services/backend/README.md).
+      GENOFFICE_BACKEND_DATA_DIR: /data/documents
     volumes:
       - backend-data:/data
     ports:

@@ -7,25 +7,28 @@ on unknown `kid`), plus `iss` / `aud` / `exp` checks with a small clock skew —
 and never calls token introspection or userinfo. The `sub` claim is the user
 identity everywhere; no local user table.
 
-Current surface: `GET /whoami` plus the projects/chats CRUD (Phase 6a).
-Later phases (documents) register additional route plugins in `src/app.ts`.
+Current surface: `GET /whoami`, the projects/chats CRUD (Phase 6a), and the
+document endpoints with version history (Phase 7a). Later phases register
+additional route plugins in `src/app.ts`.
 
 ## Layout
 
-| Path                           | What it is                                                                  |
-| ------------------------------ | --------------------------------------------------------------------------- |
-| `src/config.ts`                | Typed env config, validated fail-fast at startup                            |
-| `src/plugins/verify-auth.ts`   | `verifyAuth` fastify plugin: `authenticate` guard + `request.auth` payload  |
-| `src/plugins/error-handler.ts` | Global error handler: uniform `{error:{code,message}}` envelope             |
-| `src/plugins/storage.ts`       | Storage plugin: opens the SQLite store, decorates `app.store`               |
-| `src/storage/store.ts`         | Persistence: sub-scoped prepared statements over `node:sqlite`              |
-| `src/routes/whoami.ts`         | `GET /whoami` — identity from the verified token payload only               |
-| `src/routes/projects.ts`       | `/projects` CRUD                                                            |
-| `src/routes/chats.ts`          | `/projects/:projectId/chats` CRUD                                           |
-| `src/app.ts`                   | App factory (`buildApp`) — composes plugins, no listen; testable via inject |
-| `src/server.ts`                | Entry point: load config → build → listen → graceful shutdown               |
-| `tests/`                       | vitest unit suite (real signed tokens against a local JWKS server)          |
-| `scripts/integration.mts`      | Live-stack integration check (NOT part of plain `npm test`)                 |
+| Path                            | What it is                                                                   |
+| ------------------------------- | ---------------------------------------------------------------------------- |
+| `src/config.ts`                 | Typed env config, validated fail-fast at startup                             |
+| `src/plugins/verify-auth.ts`    | `verifyAuth` fastify plugin: `authenticate` guard + `request.auth` payload   |
+| `src/plugins/error-handler.ts`  | Global error handler: uniform `{error:{code,message}}` envelope              |
+| `src/plugins/storage.ts`        | Storage plugin: SQLite store + byte store, decorates `app.store`/`app.files` |
+| `src/storage/store.ts`          | Persistence: sub-scoped prepared statements over `node:sqlite`               |
+| `src/storage/document-files.ts` | Document bytes on disk: `<dataDir>/<sub>/<docId>/<version>` + integrity      |
+| `src/routes/whoami.ts`          | `GET /whoami` — identity from the verified token payload only                |
+| `src/routes/projects.ts`        | `/projects` CRUD                                                             |
+| `src/routes/chats.ts`           | `/projects/:projectId/chats` CRUD                                            |
+| `src/routes/documents.ts`       | `/documents` CRUD + version history (multipart/raw uploads)                  |
+| `src/app.ts`                    | App factory (`buildApp`) — composes plugins, no listen; testable via inject  |
+| `src/server.ts`                 | Entry point: load config → build → listen → graceful shutdown                |
+| `tests/`                        | vitest unit suite (real signed tokens against a local JWKS server)           |
+| `scripts/integration.mts`       | Live-stack integration check (NOT part of plain `npm test`)                  |
 
 ## Run (dev)
 
@@ -131,13 +134,81 @@ client-side policy built on this (remote `ProjectApi` in
 `packages/project-store`, shell routing) is documented in
 `docs/cloud-backend-auth.md` ("Phase 6 conflict & routing policy").
 
+## Documents (Phase 7a)
+
+Documents are files (docx/xlsx/pptx/pdf/md/html) with server-side version
+history. Metadata (name, kind, size, sha256, version counter) lives in
+SQLite; the bytes live on disk, laid out
+
+```
+$GENOFFICE_BACKEND_DATA_DIR/<urlencoded sub>/<documentId>/<version>
+```
+
+— never indexed by filename. The `sub` level makes byte isolation
+structural (one user's tree is not addressable through another's), and the
+`sub` directory name is URL-encoded, so even a `sub` carrying path
+separators stays inside one directory. Files are written `0600` under
+directories created `0700`, staged under a dot-file and renamed into place
+**before** the SQLite rows commit, so a crash at any point can orphan a file
+(inert) but never leaves a row without bytes.
+
+### Endpoints
+
+| Method   | Path                               | Body / notes                                                                                                      | Success                      |
+| -------- | ---------------------------------- | ----------------------------------------------------------------------------------------------------------------- | ---------------------------- |
+| `GET`    | `/documents`                       | list metadata (id, name, kind, size, updatedAt, currentVersion)                                                   | `200 {documents:[…]}`        |
+| `POST`   | `/documents`                       | multipart (`name`, `kind` fields + one `file` part) — **primary**; or `application/octet-stream` + `?name=&kind=` | `201` record                 |
+| `GET`    | `/documents/:id`                   | download current bytes (`ETag: version`)                                                                          | `200` bytes / `404`          |
+| `PUT`    | `/documents/:id`                   | upload as above (metadata fields optional); optional `If-Match`                                                   | `200` record / `404` / `409` |
+| `PUT`    | `/documents/:id?conflict=copy`     | stores the upload as a NEW document `<name> (conflict <UTC ISO>)`, fresh version chain                            | `201` / `404`                |
+| `DELETE` | `/documents/:id`                   | hard delete rows + files; optional `If-Match`                                                                     | `204` / `404` / `409`        |
+| `GET`    | `/documents/:id/versions`          | history: version, size, sha256, createdAt — newest first                                                          | `200 {versions:[…]}` / `404` |
+| `GET`    | `/documents/:id/versions/:version` | download that version's bytes                                                                                     | `200` bytes / `404`          |
+
+**Multipart is the primary upload shape** (multiple parts, streamed, no
+total-size ambiguity); the raw octet-stream form with `name`/`kind` query
+params is a documented fallback for trivial clients. Sending `name`/`kind`
+as query params on a multipart request is a 400. Multipart bodies are held
+to JSON-body strictness: only the `name`/`kind` fields, each at most once,
+plus exactly one `file` part — anything else is a 400. Uploads stream
+straight to their staging file, so a request is never buffered whole.
+
+Version semantics: `POST` creates version 1; every `PUT` appends a version
+row and bumps the document's monotonic counter, which is the `If-Match`
+value and the download's `ETag` (deliberately the same bare integer the
+guard accepts — not an RFC-quoted ETag). `PUT` may also update `name`/`kind`
+by including them. Absent `If-Match` = last-writer-wins; stale = 409
+`version_conflict` (the stored version is untouched); non-integer = 400.
+
+**Conflict copies**: after a 409 the client re-uploads with
+`?conflict=copy` and the server stores those bytes as a NEW document named
+`<name> (conflict <UTC ISO>)` with its own version chain (201). The
+original is never modified. The client-side conflict-copy mechanism (hybrid
+mode) lands in Phase 7's adapters; this endpoint only makes it possible.
+
+### Limits
+
+| Limit                            | Value                                  | Behaviour                                                                                                              |
+| -------------------------------- | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| Max size of one uploaded version | 200 MiB                                | `413 payload_too_large`, enforced while streaming (nothing oversized is ever written) and up-front on `Content-Length` |
+| Versions retained per document   | 50                                     | oldest pruned on insert (in the same SQLite transaction); a pruned version answers `404` like a missing one            |
+| Document name                    | ≤ 255 chars, non-blank                 | `400 validation_failed`                                                                                                |
+| `kind`                           | `docx` `xlsx` `pptx` `pdf` `md` `html` | `400 validation_failed`                                                                                                |
+
+Integrity: the sha256 recorded with a version is computed from the bytes
+actually written (a client-supplied hash is never trusted) and re-verified
+on every download; a mismatch (disk corruption, tampering) is logged
+server-side only and answered with the generic 500 `internal_error` — no
+paths leak.
+
 ### Validation limits
 
 Message field caps mirror the local store's truncation limits
 (`packages/project-store`): `text` ≤ 32 000 chars, tool `input`/`output`
 ≤ 16 000, scope `text` ≤ 400. The local store truncates silently; the API
 **rejects** with 400, so clients apply the same truncation before
-uploading. Request bodies are limited to fastify's 1 MiB default.
+uploading. JSON request bodies are limited to fastify's 1 MiB default;
+document uploads use their own 200 MiB cap (see above).
 
 ## Configuration
 
@@ -153,8 +224,10 @@ variable.
 | `GENOFFICE_BACKEND_JWKS_URL`           | `{issuer}/protocol/openid-connect/certs` | JWKS fetch location (override for the Docker case)                |
 | `GENOFFICE_BACKEND_CLOCK_SKEW_SECONDS` | `30`                                     | Leeway on `exp`/`nbf`                                             |
 | `GENOFFICE_BACKEND_DB`                 | `:memory:`                               | SQLite path (`:memory:` or a file; parent dirs are created)       |
+| `GENOFFICE_BACKEND_DATA_DIR`           | `<cwd>/data/documents`                   | Root of the document byte tree (created as needed)                |
 
 The compose `backend` service sets `GENOFFICE_BACKEND_DB=/data/genoffice-backend.db`
+and `GENOFFICE_BACKEND_DATA_DIR=/data/documents`
 with the `backend-data` named volume mounted at `/data`, so data survives
 container restarts (`docker compose down -v` wipes it — dev stack, by design).
 
@@ -172,7 +245,7 @@ what the live Phase 0 stack answers on.
    verification page, poll the token endpoint.
 3. Call the API:
 
-```bash
+````bash
 # 401 without credentials (note the WWW-Authenticate: Bearer header)
 curl -i http://localhost:8000/whoami
 
@@ -193,7 +266,25 @@ curl -s -X PUT http://localhost:8000/projects/$PROJECT_ID/chats/$CHAT_ID \
   -H "Authorization: Bearer $ACCESS_TOKEN" \
   -H 'content-type: application/json' \
   -d '{"messages":[{"role":"user","text":"hello"}]}'
-```
+
+# document upload (multipart, the primary shape) + byte-exact download
+curl -s -X POST http://localhost:8000/documents \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  -F name=notes.md -F kind=md -F file=@notes.md
+# -> 201 {"id":"<uuid>","name":"notes.md","kind":"md","size":…,"sha256":…,
+#         "currentVersion":1,"createdAt":…,"updatedAt":…}
+
+curl -s http://localhost:8000/documents/$DOCUMENT_ID \
+  -H "Authorization: Bearer $ACCESS_TOKEN" -o downloaded.md
+# response headers: etag: 1, content-type: application/octet-stream
+
+# version-checked update (If-Match = the version last seen)
+curl -s -X PUT http://localhost:8000/documents/$DOCUMENT_ID \
+  -H "Authorization: Bearer $ACCESS_TOKEN" -H 'If-Match: 1' \
+  -F name=notes.md -F kind=md -F file=@notes.md
+
+curl -s http://localhost:8000/documents/$DOCUMENT_ID/versions \
+  -H "Authorization: Bearer $ACCESS_TOKEN"
 
 ## Tests
 
@@ -203,10 +294,12 @@ npm run -w @genoffice/backend test
 
 # integration check against the live Phase 0 stack: boots Keycloak if it is
 # down, mints real device-flow tokens as testuser AND a second provisioned
-# user, starts the backend in-process on a throwaway file DB, and asserts
-# whoami + the full projects/chats CRUD including cross-user isolation
+# user, starts the backend in-process on a throwaway file DB + document data
+# dir, and asserts whoami + the full projects/chats CRUD + the document
+# round-trips (upload/download, guarded update, conflict copy, history,
+# If-Match delete) including cross-user isolation on both metadata and bytes
 npm run -w @genoffice/backend test:integration
-```
+````
 
 The unit suite signs real tokens with locally generated RSA keys and serves a
 real JWKS endpoint over HTTP, so signature failures, claim rejections, and
@@ -219,14 +312,18 @@ real JWKS endpoint over HTTP, so signature failures, claim rejections, and
   decisions.
 - Errors are stable JSON codes (`missing_token`, `invalid_token`,
   `validation_unavailable`, `not_found`, `validation_failed`,
-  `bad_request`, `version_conflict`, `internal_error`) in the uniform
+  `bad_request`, `version_conflict`, `payload_too_large`,
+  `unsupported_media_type`, `internal_error`) in the uniform
   `{error:{code,message}}`
   envelope; 401s carry `WWW-Authenticate: Bearer`. No token material is ever
   echoed in a response or a log line; 500s never leak internals.
 - Ownership scoping is structural: `sub` comes only from the verified
   token, every store method takes it as its first parameter, and every SQL
   statement (including deletes) binds it. Foreign and missing resources
-  answer the same 404.
+  answer the same 404. Document **bytes** are scoped the same way — the
+  on-disk tree is keyed by (URL-encoded) `sub`, so no path through the API
+  reaches another user's files, and a failed integrity check reports no
+  paths to the client.
 - All SQL goes through prepared statements with bound parameters — no user
   input is ever interpolated into a query string.
 - Request logging redacts `authorization` and `cookie` headers (fastify's

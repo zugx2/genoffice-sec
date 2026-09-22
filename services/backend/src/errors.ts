@@ -39,3 +39,21 @@ export function versionConflict(): ApiError {
 export function badIfMatch(): ApiError {
   return new ApiError(400, 'validation_failed', 'If-Match must be the integer version')
 }
+
+/**
+ * 413 for an upload larger than the document size limit (200 MiB). Checked
+ * while streaming to disk — the body is never buffered whole — and also
+ * enforced up-front on `Content-Length` for the raw upload path.
+ */
+export function payloadTooLarge(): ApiError {
+  return new ApiError(413, 'payload_too_large', 'uploaded document exceeds the size limit')
+}
+
+/** 415 for an upload whose content type is neither multipart nor octet-stream. */
+export function unsupportedMediaType(): ApiError {
+  return new ApiError(
+    415,
+    'unsupported_media_type',
+    'upload must be multipart/form-data or application/octet-stream',
+  )
+}
