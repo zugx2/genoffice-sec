@@ -27,6 +27,10 @@
  * Documents (Phase 7a) keep only metadata here — one row per document plus
  * one row per retained version (`size` + `sha256`); the bytes live in
  * `storage/document-files.ts`, keyed by the same `sub`/`documentId`.
+ * Per-user document metadata (Phase 7d: server-side recents/starred, keyed
+ * by the cloud document id instead of a local path) is a fourth table,
+ * `document_meta` (`starred`, `last_opened_at`), deleted alongside the
+ * document it annotates.
  */
 
 import { randomUUID } from 'node:crypto'
@@ -119,7 +123,12 @@ export interface DocumentVersionRecord {
   createdAt: string
 }
 
-/** List-item shape: metadata only, no bytes (`currentVersion` = If-Match value). */
+/**
+ * List-item shape: metadata only, no bytes (`currentVersion` = If-Match value).
+ * `starred`/`lastOpenedAt` come from the `document_meta` table (Phase 7d:
+ * server-side recents/starred keyed by the cloud document id) and read as
+ * `false`/`null` for a document nobody starred or opened yet.
+ */
 export interface DocumentSummaryRecord {
   id: string
   name: string
@@ -133,6 +142,10 @@ export interface DocumentSummaryRecord {
   createdAt: string
   /** UTC ISO string */
   updatedAt: string
+  /** Whether the user starred this document (`document_meta`) */
+  starred: boolean
+  /** UTC ISO string of the last `POST /documents/:id/opened`; null when never */
+  lastOpenedAt: string | null
 }
 
 /** Full metadata record returned by create/update (adds the current sha256). */
@@ -196,6 +209,14 @@ CREATE TABLE IF NOT EXISTS document_versions (
   created_at  TEXT NOT NULL,
   PRIMARY KEY (sub, document_id, version)
 );
+
+CREATE TABLE IF NOT EXISTS document_meta (
+  sub            TEXT NOT NULL,
+  document_id    TEXT NOT NULL,
+  starred        INTEGER NOT NULL DEFAULT 0, -- 0/1
+  last_opened_at TEXT, -- UTC ISO, null when never opened
+  PRIMARY KEY (sub, document_id)
+);
 `
 
 interface ProjectRow {
@@ -228,6 +249,10 @@ interface DocumentRow {
   current_version: number
   size: number
   sha256: string
+  /** from the LEFT JOIN on document_meta; 0/undefined when no row exists */
+  starred?: number
+  /** from the LEFT JOIN on document_meta; null/undefined when never opened */
+  last_opened_at?: string | null
 }
 
 interface DocumentVersionRow {
@@ -320,6 +345,8 @@ export class BackendStore {
       currentVersion: row.current_version,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
+      starred: row.starred === 1,
+      lastOpenedAt: row.last_opened_at ?? null,
     }
   }
 
@@ -560,29 +587,36 @@ export class BackendStore {
 
   // ── Documents (metadata + version rows; bytes on disk) ────
 
-  /** Document row joined with its current version, or undefined. */
+  /** Document row joined with its current version and meta, or undefined. */
   #documentRow(sub: string, documentId: string): DocumentRow | undefined {
     return this.#stmt(
       `SELECT d.id, d.sub, d.name, d.kind, d.created_at, d.updated_at,
-              d.version AS current_version, v.size, v.sha256
+              d.version AS current_version, v.size, v.sha256,
+              m.starred, m.last_opened_at
          FROM documents d
          JOIN document_versions v
            ON v.sub = d.sub AND v.document_id = d.id AND v.version = d.version
+         LEFT JOIN document_meta m
+           ON m.sub = d.sub AND m.document_id = d.id
         WHERE d.sub = ? AND d.id = ?`,
     ).get(sub, documentId) as unknown as DocumentRow | undefined
   }
 
   /**
-   * All documents of this sub with their current version's size, oldest
-   * first (creation order, stable — same convention as projects/chats).
+   * All documents of this sub with their current version's size and their
+   * star/open metadata, oldest first (creation order, stable — same
+   * convention as projects/chats).
    */
   listDocuments(sub: string): DocumentSummaryRecord[] {
     const rows = this.#stmt(
       `SELECT d.id, d.sub, d.name, d.kind, d.created_at, d.updated_at,
-              d.version AS current_version, v.size
+              d.version AS current_version, v.size,
+              m.starred, m.last_opened_at
          FROM documents d
          JOIN document_versions v
            ON v.sub = d.sub AND v.document_id = d.id AND v.version = d.version
+         LEFT JOIN document_meta m
+           ON m.sub = d.sub AND m.document_id = d.id
         WHERE d.sub = ?
         ORDER BY d.created_at ASC, d.id ASC`,
     ).all(sub) as unknown as Array<Omit<DocumentRow, 'sha256'>>
@@ -594,6 +628,8 @@ export class BackendStore {
       currentVersion: row.current_version,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
+      starred: row.starred === 1,
+      lastOpenedAt: row.last_opened_at ?? null,
     }))
   }
 
@@ -644,6 +680,8 @@ export class BackendStore {
         currentVersion: 1,
         createdAt: now,
         updatedAt: now,
+        starred: false,
+        lastOpenedAt: null,
       } satisfies DocumentRecord
     })
   }
@@ -710,6 +748,7 @@ export class BackendStore {
           currentVersion: row.current_version,
           createdAt: row.created_at,
           updatedAt: row.updated_at,
+          ...this.#documentMeta(sub, documentId),
         },
         pruned,
       }
@@ -758,9 +797,9 @@ export class BackendStore {
   }
 
   /**
-   * Hard delete of the document row and all its version rows, sub-scoped.
-   * False when not found for this sub. The bytes are the caller's to remove
-   * after this returns true.
+   * Hard delete of the document row, all its version rows, and its meta row,
+   * sub-scoped. False when not found for this sub. The bytes are the caller's
+   * to remove after this returns true.
    */
   deleteDocument(sub: string, documentId: string): boolean {
     return this.#withTransaction(() => {
@@ -769,8 +808,63 @@ export class BackendStore {
         sub,
         documentId,
       )
+      this.#stmt('DELETE FROM document_meta WHERE sub = ? AND document_id = ?').run(sub, documentId)
       this.#stmt('DELETE FROM documents WHERE sub = ? AND id = ?').run(sub, documentId)
       return true
+    })
+  }
+
+  // ── Document meta (Phase 7d: server-side recents/starred) ──
+
+  /** Star/open metadata of one document (absent row reads as unstarred/never). */
+  #documentMeta(
+    sub: string,
+    documentId: string,
+  ): { starred: boolean; lastOpenedAt: string | null } {
+    const row = this.#stmt(
+      'SELECT starred, last_opened_at FROM document_meta WHERE sub = ? AND document_id = ?',
+    ).get(sub, documentId) as unknown as
+      { starred: number; last_opened_at: string | null } | undefined
+    return {
+      starred: row !== undefined && row.starred === 1,
+      lastOpenedAt: row?.last_opened_at ?? null,
+    }
+  }
+
+  /**
+   * Upserts the star flag (`document_meta`). Deliberately If-Match-free —
+   * starring is pure metadata, and the documented client policy on these
+   * fields is server last-write-wins. Returns false when the document is not
+   * this sub's (the route maps that to the same 404 as everywhere else).
+   */
+  setDocumentStarred(sub: string, documentId: string, starred: boolean): boolean {
+    return this.#withTransaction(() => {
+      if (this.documentVersion(sub, documentId) === null) return false
+      this.#stmt(
+        `INSERT INTO document_meta (sub, document_id, starred, last_opened_at)
+             VALUES (?, ?, ?, NULL)
+         ON CONFLICT(sub, document_id) DO UPDATE SET starred = excluded.starred`,
+      ).run(sub, documentId, starred ? 1 : 0)
+      return true
+    })
+  }
+
+  /**
+   * Upserts `last_opened_at` to now — the server-side recents stamp, written
+   * by `POST /documents/:id/opened` when a client opens a cloud document.
+   * Returns the stored timestamp, or null when the document is not this
+   * sub's.
+   */
+  markDocumentOpened(sub: string, documentId: string): string | null {
+    return this.#withTransaction(() => {
+      if (this.documentVersion(sub, documentId) === null) return null
+      const row = this.#stmt(
+        `INSERT INTO document_meta (sub, document_id, starred, last_opened_at)
+             VALUES (?, ?, 0, ?)
+         ON CONFLICT(sub, document_id) DO UPDATE SET last_opened_at = excluded.last_opened_at
+       RETURNING last_opened_at`,
+      ).get(sub, documentId, nowIso()) as unknown as { last_opened_at: string }
+      return row.last_opened_at
     })
   }
 }

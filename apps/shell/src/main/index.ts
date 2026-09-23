@@ -76,6 +76,7 @@ import {
   registerAuthIpc,
   restoreAuthSession,
 } from './auth/ipc'
+import { registerCloudDocsIpc } from './auth/cloud-docs-ipc'
 import { RoutingProjectApi } from './auth/project-routing'
 import { RemoteProjectApi } from '@genoffice/project-store'
 import {
@@ -4785,6 +4786,10 @@ registerHomeIpc()
 // surface; the proxy bootstrap is injected so login traffic rides the same
 // proxy-aware fetch stack as the Genspark login
 registerAuthIpc({ waitForProxy: () => proxyBootstrap })
+// cloud-documents registry + the home cloud section's channels (Phase 7d):
+// registered after auth so the registry can read the session manager and the
+// shared backend client; same proxy-aware fetch stack as the auth traffic
+registerCloudDocsIpc({ waitForProxy: () => proxyBootstrap })
 registerIntegrationsIpc({
   settingsPath: APP_SETTINGS_PATH,
   window: () => shellWindow,

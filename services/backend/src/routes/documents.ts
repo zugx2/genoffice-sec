@@ -26,6 +26,13 @@
  * Missing and foreign ids answer the same 404 — no existence leak — and
  * byte isolation is structural: the disk tree is keyed by `sub` and every
  * query is `WHERE sub = ?`.
+ *
+ * Phase 7d adds the document-meta surface on top: `GET /documents` list
+ * items carry `starred`/`lastOpenedAt` from the `document_meta` table, and
+ * `PUT /documents/:id/starred` + `POST /documents/:id/opened` write them.
+ * Metadata only — no bytes, no version bump, no `If-Match` (the documented
+ * client policy on these fields is server last-write-wins, so an offline
+ * star replays without conflict handling).
  */
 
 import multipart from '@fastify/multipart'
@@ -88,6 +95,14 @@ const versionParamsSchema = {
     // parsed number inside Number.MAX_SAFE_INTEGER.
     version: { type: 'string', pattern: '^[1-9][0-9]{0,9}$' },
   },
+} as const
+
+const starredBodySchema = {
+  type: 'object',
+  required: ['starred'],
+  additionalProperties: false,
+  // strict boolean: with ajv's coerceTypes off, 0/1/"true" are 400s
+  properties: { starred: { type: 'boolean' } },
 } as const
 
 // ── Field validation, shared by the multipart and raw channels ──
@@ -531,6 +546,41 @@ export const documentRoutes: FastifyPluginAsync = async (app: FastifyInstance): 
         version,
         document.name,
       )
+    },
+  )
+
+  // ── Document meta (Phase 7d: server-side recents/starred) ──
+  //
+  // Two tiny endpoints over the `document_meta` table. Deliberately
+  // If-Match-free and version-bump-free: star/open state is pure metadata
+  // (never part of the byte chain), the client policy on it is documented
+  // server last-write-wins, and versioning it would make an offline star
+  // conflict with a concurrent edit — the one case the design says to avoid.
+
+  app.put<{ Params: { documentId: string } }>(
+    '/documents/:documentId/starred',
+    {
+      preHandler: [app.authenticate],
+      schema: { params: documentIdParamSchema, body: starredBodySchema },
+    },
+    async (request) => {
+      const sub = requireSub(request)
+      const starred = (request.body as { starred: boolean }).starred
+      if (!app.store.setDocumentStarred(sub, request.params.documentId, starred)) {
+        throw notFound()
+      }
+      return app.store.getDocument(sub, request.params.documentId)
+    },
+  )
+
+  app.post<{ Params: { documentId: string } }>(
+    '/documents/:documentId/opened',
+    { preHandler: [app.authenticate], schema: { params: documentIdParamSchema } },
+    async (request) => {
+      const sub = requireSub(request)
+      const lastOpenedAt = app.store.markDocumentOpened(sub, request.params.documentId)
+      if (lastOpenedAt === null) throw notFound()
+      return { lastOpenedAt }
     },
   )
 }

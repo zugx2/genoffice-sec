@@ -45,7 +45,13 @@ import {
   setActiveSlidesWebContents,
   slidesIsDirty,
 } from '../../../slides/src/main/slides-main'
-import type { DocumentTabKind, OpenDocumentTab, TabKind, TabSummary } from '../shared/tabs-api'
+import type {
+  DocumentTabKind,
+  OpenDocumentTab,
+  TabIdentity,
+  TabKind,
+  TabSummary,
+} from '../shared/tabs-api'
 
 interface TabRecord {
   id: string
@@ -54,6 +60,14 @@ interface TabRecord {
   view: WebContentsView | null
   title: string
   filePath?: string
+  /**
+   * Cloud document id behind the tab (Phase 7d): the identity remote/hybrid
+   * documents are keyed by, where a local file's tab is keyed by `filePath`.
+   * Mutually exclusive in practice — a cloud document has no authoritative
+   * local path. Re-pointed by `rekeyTabCloudId` when the remote adapter's
+   * 404 self-heal / conflict-copy moves the id.
+   */
+  cloudId?: string
   /** chrome-free Present tab: no file, no editor menu or save/export targets */
   present?: boolean
 }
@@ -196,6 +210,7 @@ export class TabManager {
       closable: t.id !== HOME_ID,
       active: t.id === this.activeId,
       ...(t.filePath ? { filePath: t.filePath } : {}),
+      ...(t.cloudId ? { cloudId: t.cloudId } : {}),
     }))
   }
 
@@ -216,6 +231,7 @@ export class TabManager {
         kind: tab.kind as DocumentTabKind,
         title: tab.title,
         ...(tab.filePath ? { filePath: tab.filePath } : {}),
+        ...(tab.cloudId ? { cloudId: tab.cloudId } : {}),
         active: tab.id === this.activeId,
         dirty: await this.tabIsDirty(tab),
       })),
@@ -250,7 +266,14 @@ export class TabManager {
 
   openDocsTab(
     openPath?: string,
-    options?: { newBlank?: boolean; aiContent?: AiDocContent },
+    options?: {
+      newBlank?: boolean
+      aiContent?: AiDocContent
+      /** cloud identity (Phase 7d): open a remote/hybrid document by id */
+      cloudId?: string
+      /** display name for a cloud document (no path to derive a title from) */
+      title?: string
+    },
   ): string {
     const view = createDocsView(openPath)
     const id = `t${this.nextId++}`
@@ -263,8 +286,10 @@ export class TabManager {
       id,
       kind: 'docs',
       view,
-      title: openPath ? basename(openPath) : this.untitled('docs', 'GenOffice Docs'),
+      title:
+        options?.title ?? (openPath ? basename(openPath) : this.untitled('docs', 'GenOffice Docs')),
       filePath: openPath,
+      cloudId: options?.cloudId,
     })
     this.activateTab(id)
     return id
@@ -436,6 +461,20 @@ export class TabManager {
     this.onChanged()
   }
 
+  /**
+   * A module bound a cloud document inside an existing tab (the cloud twin
+   * of `setTabFileFor`: a remote-mode open or a first save that minted the
+   * server id). Cloud documents have no path, so the title follows the
+   * server-side display name instead of a basename.
+   */
+  setTabCloudIdFor(webContentsId: number, cloudId: string, title?: string): void {
+    const tab = this.tabs.find((t) => t.view?.webContents.id === webContentsId)
+    if (!tab || tab.cloudId === cloudId) return
+    tab.cloudId = cloudId
+    if (title !== undefined) tab.title = title
+    this.onChanged()
+  }
+
   /** an untitled document named itself before its first save (html: from the first AI request) */
   setTabTitleFor(webContentsId: number, title: string): void {
     const tab = this.tabs.find((t) => t.view?.webContents.id === webContentsId)
@@ -455,6 +494,30 @@ export class TabManager {
       if (tab.filePath !== oldPath) continue
       tab.filePath = newPath
       tab.title = basename(newPath)
+      if (tab.view) affected.push({ kind: tab.kind, webContents: tab.view.webContents })
+    }
+    if (affected.length > 0) this.onChanged()
+    return affected
+  }
+
+  /**
+   * A cloud document's id moved server-side (Phase 7d / Task 14 carry-over):
+   * the remote adapter's 404 self-heal recreates a vanished mirror under a
+   * fresh id and `?conflict=copy` stores the copy as a new document. The
+   * registry's `onDocumentRekeyed` wiring calls this so open tabs follow —
+   * the cloud twin of `renameTabFile`'s disk-rename re-key. Returns the
+   * affected views; `name` re-titles when the server renamed the document.
+   */
+  rekeyTabCloudId(
+    oldCloudId: string,
+    newCloudId: string,
+    name?: string,
+  ): Array<{ kind: TabKind; webContents: WebContents }> {
+    const affected: Array<{ kind: TabKind; webContents: WebContents }> = []
+    for (const tab of this.tabs) {
+      if (tab.cloudId !== oldCloudId) continue
+      tab.cloudId = newCloudId
+      if (name !== undefined) tab.title = name
       if (tab.view) affected.push({ kind: tab.kind, webContents: tab.view.webContents })
     }
     if (affected.length > 0) this.onChanged()
@@ -614,6 +677,37 @@ export class TabManager {
       (t) => t.view && t.filePath && !t.present && canonicalPath(t.filePath) === wanted,
     )
     return tab?.view ? { id: tab.id, kind: tab.kind, webContents: tab.view.webContents } : undefined
+  }
+
+  /**
+   * The editor tab holding this cloud document (Phase 7d identity). A
+   * cloudId is a server-assigned canonical string, so dedupe is an exact
+   * comparison — the cloud twin of `findTabByPath`'s realpathSync dedupe,
+   * which resolves links because a path is NOT canonical until resolved.
+   */
+  findTabByCloudId(
+    cloudId: string,
+  ): { id: string; kind: TabKind; webContents: WebContents } | undefined {
+    const tab = this.tabs.find((t) => t.view && t.cloudId === cloudId && !t.present)
+    return tab?.view ? { id: tab.id, kind: tab.kind, webContents: tab.view.webContents } : undefined
+  }
+
+  /**
+   * Identity dispatch: a path identity dedupes through `findTabByPath`, a
+   * cloudId identity through `findTabByCloudId` — the same document must
+   * never open twice, whichever key it arrived with.
+   */
+  findTabByIdentity(
+    identity: TabIdentity,
+  ): { id: string; kind: TabKind; webContents: WebContents } | undefined {
+    return 'path' in identity
+      ? this.findTabByPath(identity.path)
+      : this.findTabByCloudId(identity.cloudId)
+  }
+
+  /** cloud documents open in any tab, for the cloud-documents registry */
+  openCloudIds(): string[] {
+    return this.tabs.flatMap((t) => (t.cloudId ? [t.cloudId] : []))
   }
 
   webContentsForTab(id: string): WebContents | undefined {

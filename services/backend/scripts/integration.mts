@@ -29,7 +29,9 @@
  *    document → version history + historical download → raw octet-stream
  *    create; then user B probes A's document (metadata and bytes) — all
  *    404 identical to a missing id — and finally the If-Match-guarded
- *    DELETE (stale 409, matching 204, then 404).
+ *    DELETE (stale 409, matching 204, then 404). Also the document-meta
+ *    endpoints (Phase 7d): star/unstar, open-stamp, list fields, strict
+ *    body validation, and the same cross-user 404s.
  * 7. cleanup: closes the backend and deletes the throwaway dir.
  *    Keycloak is left as found (the operator tears it down with
  *    `docker compose ... down -v`).
@@ -849,6 +851,34 @@ async function main(): Promise<void> {
     )
     log('documents as A: guarded PUT + 409 + conflict-copy + version history ok')
 
+    // ── document meta: server-side recents/starred (Phase 7d) ──
+    const starredPut = await api('PUT', `/documents/${docId}/starred`, userA.accessToken, {
+      starred: true,
+    })
+    expect(
+      starredPut.status === 200 && starredPut.body.starred === true,
+      `star PUT must 200 with the reflected flag (got ${starredPut.status})`,
+    )
+    const opened = await api('POST', `/documents/${docId}/opened`, userA.accessToken)
+    expect(
+      opened.status === 200 && typeof opened.body.lastOpenedAt === 'string',
+      `opened POST must 200 with a lastOpenedAt stamp (got ${opened.status})`,
+    )
+    const listWithMeta = await api('GET', '/documents', userA.accessToken)
+    const metaRow = listWithMeta.body.documents.find((d: any) => d.id === docId)
+    expect(
+      metaRow?.starred === true && metaRow?.lastOpenedAt === opened.body.lastOpenedAt,
+      'document list must carry starred/lastOpenedAt from document_meta',
+    )
+    const badStar = await api('PUT', `/documents/${docId}/starred`, userA.accessToken, {
+      starred: 'yes',
+    })
+    expect(
+      badStar.status === 400 && badStar.body.error.code === 'validation_failed',
+      `non-boolean starred must 400 (got ${badStar.status})`,
+    )
+    log('documents as A: starred + opened metadata endpoints ok')
+
     // ── cross-user isolation on documents (metadata AND bytes) ──
     const missingDoc = await api(
       'GET',
@@ -875,6 +905,26 @@ async function main(): Promise<void> {
         res.status === 404 &&
           (method === 'GET' || JSON.stringify(res.json) === JSON.stringify(missingDoc.body)),
         `B ${method} ${path} must 404 identical to a missing id (got ${res.status})`,
+      )
+    }
+    // the document-meta endpoints are sub-scoped like everything else
+    const metaProbes: Array<[string, string, unknown]> = [
+      ['PUT', `/documents/${docId}/starred`, { starred: true }],
+      ['POST', `/documents/${docId}/opened`, undefined],
+    ]
+    for (const [method, path, body] of metaProbes) {
+      const foreign = await api(method, path, userB.accessToken, body)
+      const absent = await api(
+        method,
+        path.replace(docId, '00000000-0000-4000-8000-000000000000'),
+        userB.accessToken,
+        body,
+      )
+      expect(
+        foreign.status === 404 &&
+          JSON.stringify(foreign.body) === JSON.stringify(absent.body) &&
+          JSON.stringify(foreign.body) === JSON.stringify(missingDoc.body),
+        `B ${method} ${path} must 404 identical to a missing id (got ${foreign.status})`,
       )
     }
     const bDocList = await api('GET', '/documents', userB.accessToken)

@@ -81,7 +81,8 @@ afterAll(async () => {
 interface Options {
   token?: string | null
   headers?: Record<string, string>
-  payload?: Buffer | string
+  /** string/Buffer bodies as-is; objects serialize as JSON (light-my-request) */
+  payload?: Buffer | string | Record<string, unknown>
   ifMatch?: string
 }
 
@@ -181,6 +182,8 @@ describe('documents CRUD', () => {
       currentVersion: 1,
       createdAt: expect.any(String) as string,
       updatedAt: expect.any(String) as string,
+      starred: false,
+      lastOpenedAt: null,
     })
   })
 
@@ -223,15 +226,21 @@ describe('documents CRUD', () => {
     const items: any[] = res.body.documents
     expect(items.length).toBeGreaterThanOrEqual(2)
     for (const item of items) {
+      // Phase 7d extended the item with document_meta fields — additive:
+      // every pre-7d field keeps its name and shape.
       expect(Object.keys(item).sort()).toEqual([
         'createdAt',
         'currentVersion',
         'id',
         'kind',
+        'lastOpenedAt',
         'name',
         'size',
+        'starred',
         'updatedAt',
       ])
+      expect(item.starred).toBe(false)
+      expect(item.lastOpenedAt).toBeNull()
     }
     const ids = items.map((d) => d.id)
     expect(ids).toContain(first.id)
@@ -722,6 +731,122 @@ describe('cross-user isolation (user B vs user A)', () => {
   })
 })
 
+// ── Document meta (Phase 7d: server-side recents/starred) ──────────────
+
+describe('document meta (starred / lastOpenedAt)', () => {
+  it('stars and unstars through PUT /starred, reflected in list and get', async () => {
+    const doc = await createDocument('star-me.md', 'md', Buffer.from('s'))
+    const put = await json('PUT', `/documents/${doc.id}/starred`, { payload: { starred: true } })
+    expect(put.status).toBe(200)
+    expect(put.body.starred).toBe(true)
+    // the star survives byte mutations and never bumps the version counter
+    const edit = await req('PUT', `/documents/${doc.id}`, {
+      ...multipart({}, Buffer.from('s2')),
+      ifMatch: '1',
+    })
+    expect(edit.statusCode).toBe(200)
+    expect(edit.json()).toMatchObject({ currentVersion: 2, starred: true })
+    expect(edit.json().version).toBeUndefined()
+
+    const listed = (await json('GET', '/documents')).body.documents.find(
+      (d: any) => d.id === doc.id,
+    )
+    expect(listed.starred).toBe(true)
+    expect(listed.lastOpenedAt).toBeNull()
+
+    const unstar = await json('PUT', `/documents/${doc.id}/starred`, {
+      payload: { starred: false },
+    })
+    expect(unstar.status).toBe(200)
+    expect(unstar.body.starred).toBe(false)
+  })
+
+  it('stamps lastOpenedAt on POST /opened, without touching the version or the star', async () => {
+    const doc = await createDocument('open-me.md', 'md', Buffer.from('o'))
+    const first = await json('POST', `/documents/${doc.id}/opened`)
+    expect(first.status).toBe(200)
+    expect(first.body.lastOpenedAt).toEqual(expect.any(String) as string)
+    const firstAt = first.body.lastOpenedAt as string
+    // a second open re-stamps (recents order is "most recently opened")
+    await new Promise((r) => setTimeout(r, 5))
+    const second = await json('POST', `/documents/${doc.id}/opened`)
+    expect(String(second.body.lastOpenedAt) >= firstAt).toBe(true)
+
+    const listed = (await json('GET', '/documents')).body.documents.find(
+      (d: any) => d.id === doc.id,
+    )
+    expect(listed.lastOpenedAt).toBe(second.body.lastOpenedAt)
+    expect(listed.starred).toBe(false)
+    expect(listed.currentVersion).toBe(1)
+  })
+
+  it('validates the starred body strictly (missing/non-boolean/extra → 400)', async () => {
+    const doc = await createDocument('validate.md', 'md', Buffer.from('v'))
+    for (const payload of [
+      undefined,
+      {},
+      { starred: 1 },
+      { starred: 'true' },
+      { starred: true, x: 1 },
+    ]) {
+      const res = await json('PUT', `/documents/${doc.id}/starred`, { payload })
+      expect(res.status, JSON.stringify(payload)).toBe(400)
+    }
+    // and nothing was written by the rejected requests
+    const listed = (await json('GET', '/documents')).body.documents.find(
+      (d: any) => d.id === doc.id,
+    )
+    expect(listed.starred).toBe(false)
+  })
+
+  it('keeps meta isolated per sub (foreign star/open reads as 404, list unaffected)', async () => {
+    const aDoc = await createDocument('a-meta.md', 'md', Buffer.from('a'))
+    await json('PUT', `/documents/${aDoc.id}/starred`, { payload: { starred: true } })
+    await json('POST', `/documents/${aDoc.id}/opened`)
+
+    const missing = '00000000-0000-4000-8000-000000000000'
+    for (const [method, url] of [
+      ['PUT', `/documents/${aDoc.id}/starred`],
+      ['POST', `/documents/${aDoc.id}/opened`],
+    ] as const) {
+      const foreign = await json(method, url, {
+        token: tokenB,
+        ...(method === 'PUT' ? { payload: { starred: true } } : {}),
+      })
+      const absent = await json(method, url.replace(aDoc.id, missing), {
+        token: tokenB,
+        ...(method === 'PUT' ? { payload: { starred: true } } : {}),
+      })
+      expect(foreign.status).toBe(404)
+      expect(foreign.status).toBe(absent.status)
+      expect(foreign.body).toEqual(absent.body)
+    }
+
+    // A's star/open state is intact and invisible to B's list
+    const bList = (await json('GET', '/documents', { token: tokenB })).body.documents
+    expect(bList.some((d: any) => d.id === aDoc.id)).toBe(false)
+    const aListed = (await json('GET', '/documents')).body.documents.find(
+      (d: any) => d.id === aDoc.id,
+    )
+    expect(aListed.starred).toBe(true)
+    expect(aListed.lastOpenedAt).toEqual(expect.any(String) as string)
+  })
+
+  it('drops the meta row with the document (delete then recreate starts clean)', async () => {
+    const doc = await createDocument('gone.md', 'md', Buffer.from('g'))
+    await json('PUT', `/documents/${doc.id}/starred`, { payload: { starred: true } })
+    const del = await json('DELETE', `/documents/${doc.id}`)
+    expect(del.status).toBe(204)
+    expect(
+      (await json('PUT', `/documents/${doc.id}/starred`, { payload: { starred: true } })).status,
+    ).toBe(404)
+    expect((await json('POST', `/documents/${doc.id}/opened`)).status).toBe(404)
+    // the orphan meta row is not resurrected into a later list
+    const listed = (await json('GET', '/documents')).body.documents
+    expect(listed.some((d: any) => d.id === doc.id)).toBe(false)
+  })
+})
+
 // ── Auth ───────────────────────────────────────────────────────────────
 
 describe('auth (401)', () => {
@@ -735,6 +860,8 @@ describe('auth (401)', () => {
       ['DELETE', `/documents/${doc.id}`, {}],
       ['GET', `/documents/${doc.id}/versions`, {}],
       ['GET', `/documents/${doc.id}/versions/1`, {}],
+      ['PUT', `/documents/${doc.id}/starred`, { payload: { starred: true } }],
+      ['POST', `/documents/${doc.id}/opened`, {}],
     ]
     for (const [method, url, opts] of cases) {
       const res = await req(method, url, { ...opts, token: null })

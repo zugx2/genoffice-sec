@@ -3,6 +3,14 @@ export type TabKind = 'home' | 'docs' | 'sheets' | 'slides' | 'pdf' | 'markdown'
 /** a tab that holds a document — every kind except the Home screen */
 export type DocumentTabKind = Exclude<TabKind, 'home'>
 
+/**
+ * How a tab's document is identified (Phase 7d cloud identity): the absolute
+ * path of a local file, OR the server-assigned cloud document id of a
+ * remote/hybrid-mode document. Exactly one of the two; a cloud document has
+ * no authoritative local path and an untitled local document has neither.
+ */
+export type TabIdentity = { path: string } | { cloudId: string }
+
 /** one open tab in the top tab strip; Home is always id 'home' and not closable */
 export interface TabSummary {
   id: string
@@ -12,6 +20,8 @@ export interface TabSummary {
   active: boolean
   /** absolute path behind the tab; absent while the document is untitled */
   filePath?: string
+  /** cloud document id behind the tab (remote/hybrid mode); absent for local files */
+  cloudId?: string
 }
 
 /**
@@ -25,6 +35,8 @@ export interface OpenDocumentTab {
   kind: DocumentTabKind
   title: string
   filePath?: string
+  /** cloud document id behind the tab (remote/hybrid mode) */
+  cloudId?: string
   active: boolean
   dirty: boolean
 }

@@ -575,6 +575,90 @@ describe('file path bookkeeping', () => {
   })
 })
 
+describe('cloud identity (Phase 7d)', () => {
+  it('opens a docs tab with a cloudId and lists it in the summary', () => {
+    const id = manager.openDocsTab(undefined, { cloudId: 'cloud-1', title: 'Remote notes' })
+    const summary = manager.list()[1]
+    expect(summary).toMatchObject({
+      id,
+      kind: 'docs',
+      title: 'Remote notes',
+      cloudId: 'cloud-1',
+    })
+    // a cloud tab has no path until storage modes route a local twin
+    expect('filePath' in summary).toBe(false)
+    expect(manager.openDocuments()).resolves.toMatchObject([
+      { id, cloudId: 'cloud-1', dirty: false },
+    ])
+  })
+
+  it('dedupes a cloudId exactly — the cloud twin of the path realpathSync dedupe', () => {
+    manager.openDocsTab(undefined, { cloudId: 'cloud-1', title: 'A' })
+    const found = manager.findTabByCloudId('cloud-1')
+    expect(found?.id).toBe('t1')
+    expect(found?.kind).toBe('docs')
+    expect(manager.findTabByIdentity({ cloudId: 'cloud-1' })?.id).toBe('t1')
+    // cloud ids are server-assigned canonical strings: no resolution, no
+    // prefix or alias matching of any kind
+    expect(manager.findTabByCloudId('cloud-2')).toBeUndefined()
+    expect(manager.findTabByCloudId('cloud-1/versions')).toBeUndefined()
+    expect(manager.findTabByIdentity({ path: '/tmp/none.docx' })).toBeUndefined()
+  })
+
+  it('keeps the path-keyed behavior unchanged (path identity still resolves links)', () => {
+    manager.openDocsTab('/tmp/local.docx')
+    expect(manager.findTabByIdentity({ path: '/tmp/local.docx' })?.id).toBe('t1')
+    expect(manager.list()[1].cloudId).toBeUndefined()
+    // a cloud tab and a path tab are separate identities: neither matches the other
+    manager.openDocsTab(undefined, { cloudId: 'cloud-1', title: 'Cloud copy' })
+    expect(manager.findTabByIdentity({ cloudId: 'cloud-1' })?.id).toBe('t2')
+    expect(manager.findTabByIdentity({ path: '/tmp/local.docx' })?.id).toBe('t1')
+  })
+
+  it('binds a cloud id to an existing tab and re-titles from the display name', () => {
+    manager.openDocsTab()
+    const view = lastCreatedView(createDocsView)
+    manager.setTabCloudIdFor(view.webContents.id, 'cloud-7', 'Server name.md')
+    expect(manager.list()[1]).toMatchObject({ cloudId: 'cloud-7', title: 'Server name.md' })
+    expect(manager.findTabByCloudId('cloud-7')?.id).toBe('t1')
+  })
+
+  it('ignores setTabCloudIdFor for unknown webContents or a repeated id', () => {
+    onChanged.mockClear()
+    manager.setTabCloudIdFor(999, 'cloud-7')
+    expect(onChanged).not.toHaveBeenCalled()
+    manager.openDocsTab(undefined, { cloudId: 'cloud-7', title: 'A' })
+    const view = lastCreatedView(createDocsView)
+    onChanged.mockClear()
+    manager.setTabCloudIdFor(view.webContents.id, 'cloud-7', 'B')
+    expect(onChanged).not.toHaveBeenCalled()
+  })
+
+  it('re-keys tabs when a document cloudId moves server-side (404 self-heal)', () => {
+    manager.openDocsTab(undefined, { cloudId: 'old-id', title: 'A' })
+    const view = lastCreatedView(createDocsView)
+    const affected = manager.rekeyTabCloudId('old-id', 'new-id', 'A (copy)')
+    expect(affected).toEqual([{ kind: 'docs', webContents: view.webContents }])
+    expect(manager.list()[1]).toMatchObject({ cloudId: 'new-id', title: 'A (copy)' })
+    expect(manager.findTabByCloudId('old-id')).toBeUndefined()
+    expect(manager.findTabByCloudId('new-id')?.id).toBe('t1')
+    expect(manager.openCloudIds()).toEqual(['new-id'])
+  })
+
+  it('returns no affected views when a rekey matches nothing', () => {
+    onChanged.mockClear()
+    expect(manager.rekeyTabCloudId('unknown', 'new-id')).toEqual([])
+    expect(onChanged).not.toHaveBeenCalled()
+  })
+
+  it('openFilePaths stays path-only while openCloudIds reports the cloud tabs', () => {
+    manager.openDocsTab('/tmp/local.docx')
+    manager.openDocsTab(undefined, { cloudId: 'cloud-1', title: 'Cloud' })
+    expect(manager.openFilePaths()).toEqual(['/tmp/local.docx'])
+    expect(manager.openCloudIds()).toEqual(['cloud-1'])
+  })
+})
+
 describe('dirty-tab queries (shell close guard)', () => {
   it('lists only tabs whose module reports unsaved changes', () => {
     const dirtySheetsId = manager.openSheetsTab()

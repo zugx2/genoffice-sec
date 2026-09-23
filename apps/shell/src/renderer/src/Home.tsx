@@ -20,6 +20,11 @@ import type {
 } from '../../shared/home-api'
 import type { IntegrationsApi } from '../../shared/integrations-api'
 import type { AuthApi } from '../../shared/auth-api'
+import type {
+  CloudDocsApi,
+  CloudDocumentEntry,
+  CloudDocumentsSnapshot,
+} from '../../shared/cloud-docs-api'
 import { useDismissablePopover } from '@genoffice/ui'
 import { fileCountKey, visiblePageCount } from './counts'
 import { useI18n } from './locale'
@@ -33,6 +38,8 @@ declare global {
     aiOfficeIntegrations?: IntegrationsApi
     /** cloud-auth bridge (profile only, never tokens); optional in tests */
     aiOfficeAuth?: AuthApi
+    /** cloud-documents bridge (metadata only, never URLs/tokens); optional in tests */
+    aiOfficeCloud?: CloudDocsApi
   }
 }
 
@@ -1340,6 +1347,177 @@ function DropToOpenOverlay(): ReactElement | null {
   )
 }
 
+// ── Cloud documents (server list, Phase 7d) ─────────────
+
+/**
+ * The folder panel's "Cloud" section: the signed-in account's server-side
+ * documents as a virtual list beside the filesystem tree (the cloud twin of
+ * the recents rows — keyed by cloud document id, not path).
+ *
+ * Reads come from the main-process registry (`cloud:list-documents`, cached
+ * and instant); a background refresh pushes `cloud:documents-changed` so the
+ * section re-lists. Offline it keeps showing the last-known list behind a
+ * stale badge, and a star toggled offline is applied locally and replayed
+ * main-side (the count shows as pending).
+ *
+ * Clicking a row records the open (the server-side recents stamp). Opening
+ * the editor itself — download-to-memory and routing by storage mode — is
+ * the Phase 7 rollout task's concern, not this section's.
+ */
+export function CloudDocumentsSection() {
+  const { t } = useI18n()
+  const [snapshot, setSnapshot] = useState<CloudDocumentsSnapshot | null>(null)
+  const [open, setOpen] = useState(true)
+  const [syncing, setSyncing] = useState(false)
+
+  const list = () => {
+    void window.aiOfficeCloud?.listDocuments().then((next) => {
+      setSyncing(false)
+      // always take the latest answer: an `unavailable` after an available
+      // list means the session ended, and the previous account's rows must
+      // not linger on screen
+      setSnapshot(next)
+    })
+  }
+  const listRef = useRef(list)
+  listRef.current = list
+
+  // cached list paints instantly; the registry refreshes in the background
+  // and every change arrives pushed
+  useEffect(() => {
+    listRef.current()
+    const off = window.aiOfficeCloud?.onDocumentsChanged(() => listRef.current())
+    return () => off?.()
+  }, [])
+
+  const refresh = () => {
+    setSyncing(true)
+    listRef.current()
+  }
+
+  const toggleStar = (doc: CloudDocumentEntry) => {
+    // the returned snapshot already carries the optimistic flag, so the row
+    // flips even while the server write is queued for replay
+    void window.aiOfficeCloud?.toggleStarred(doc.cloudId, !doc.starred).then(setSnapshot)
+  }
+
+  const markOpened = (doc: CloudDocumentEntry) => {
+    void window.aiOfficeCloud?.markOpened(doc.cloudId)
+  }
+
+  // most recently opened first (never-opened documents fall back to creation
+  // time), so an open visibly moves its row up — the recents semantics
+  const documents = [...(snapshot?.documents ?? [])].sort(
+    (a, b) => Date.parse(b.lastOpenedAt ?? b.createdAt) - Date.parse(a.lastOpenedAt ?? a.createdAt),
+  )
+
+  const renderRow = (doc: CloudDocumentEntry) => (
+    <li key={doc.cloudId}>
+      <div
+        className="cloud-docs-row"
+        role="button"
+        tabIndex={0}
+        onClick={() => markOpened(doc)}
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' && event.target === event.currentTarget) markOpened(doc)
+        }}
+      >
+        <span className="tree-icon" aria-hidden="true">
+          <FileBadge ext={doc.kind} size={16} />
+        </span>
+        <span className="cloud-docs-name" title={doc.name}>
+          {doc.name || t('untitled')}
+        </span>
+        <button
+          className={`star-btn${doc.starred ? ' starred' : ''}`}
+          aria-label={doc.starred ? t('unstar') : t('star')}
+          onClick={(event) => {
+            event.stopPropagation()
+            toggleStar(doc)
+          }}
+        >
+          <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
+            <path
+              d="M8 1.9l1.9 3.85 4.25.62-3.07 3 .72 4.23L8 11.6l-3.8 2 .72-4.23-3.07-3 4.25-.62z"
+              fill={doc.starred ? '#f5a623' : 'none'}
+              stroke={doc.starred ? '#f5a623' : 'currentColor'}
+              strokeWidth="1.2"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </button>
+      </div>
+    </li>
+  )
+
+  const renderFlags = (snap: CloudDocumentsSnapshot) => (
+    <>
+      {snap.stale && <span className="cloud-docs-badge stale">{t('cloudDocsStale')}</span>}
+      {snap.pendingStars > 0 && (
+        <span className="cloud-docs-badge pending">
+          {t(snap.pendingStars === 1 ? 'cloudDocsPendingOne' : 'cloudDocsPendingMany', {
+            n: snap.pendingStars,
+          })}
+        </span>
+      )}
+    </>
+  )
+
+  // without the bridge (an older preload) there is nothing to list
+  if (!window.aiOfficeCloud) return null
+
+  return (
+    <section className="cloud-docs" aria-label={t('cloudDocsSection')}>
+      <div className="cloud-docs-head">
+        <button className="cloud-docs-toggle" aria-expanded={open} onClick={() => setOpen(!open)}>
+          <span className="tree-chevron" aria-hidden="true">
+            <Chevron open={open} />
+          </span>
+          <span className="cloud-docs-title">{t('cloudDocsSection')}</span>
+        </button>
+        {snapshot?.available && (
+          <>
+            <span className="cloud-docs-count">
+              {t(documents.length === 1 ? 'itemCountOne' : 'itemCount', { n: documents.length })}
+            </span>
+            <button
+              className={`cloud-docs-refresh${syncing ? ' syncing' : ''}`}
+              aria-label={t('cloudRefresh')}
+              data-tip={t('cloudRefresh')}
+              onClick={refresh}
+            >
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+                <path
+                  d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9M13.5 1.5v3h-3"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </button>
+          </>
+        )}
+      </div>
+      {open && snapshot !== null && !snapshot.available && (
+        <p className="cloud-docs-hint">{t('cloudDocsSignIn')}</p>
+      )}
+      {open && snapshot !== null && snapshot.available && (
+        <>
+          {(snapshot.stale || snapshot.pendingStars > 0) && (
+            <div className="cloud-docs-flags">{renderFlags(snapshot)}</div>
+          )}
+          {documents.length === 0 ? (
+            <p className="cloud-docs-hint">{t('cloudDocsEmpty')}</p>
+          ) : (
+            <ul className="cloud-docs-list">{documents.map(renderRow)}</ul>
+          )}
+        </>
+      )}
+    </section>
+  )
+}
+
 // ── Main component ──────────────────────────────────────
 
 export function Home() {
@@ -2240,6 +2418,9 @@ export function Home() {
             {root && renderTreeNode({ path: root.path, name: root.name, hasSubfolders: true }, 0)}
           </ul>
         )}
+        {/* the cloud twin: server documents as a virtual section beside the
+            filesystem tree (Phase 7d identity) */}
+        <CloudDocumentsSection />
       </div>
     )
   }

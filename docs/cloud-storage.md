@@ -41,3 +41,22 @@ Related, same rollout: `renameOwnerPath` is a local-filesystem re-key with
 no server counterpart — renaming a cloud document alongside a local rename
 (a hybrid save-as, a shell rename hook) needs a server-side rename/metadata
 decision before hybrid mode can mirror renames.
+
+## TODO tie-in (Phase 7d): cloudId re-points must reach the registry + tabs
+
+The adapter already re-points a document's cloud id silently (404 self-heal
+recreates the mirror; `?conflict=copy` stores the copy as a new document),
+but nothing else learns the new id. The shell-side contract is in place and
+waits on the storageMode wiring (Task 16):
+
+- `CloudDocumentsRegistry.onDocumentRekeyed(old, new)`
+  (`apps/shell/src/main/auth/cloud-docs.ts`) — subscribe and re-key your own
+  state; the tab manager exposes `rekeyTabCloudId` for exactly this.
+- `CloudDocumentsRegistry.rekeyDocument(old, new)` — call it for each
+  re-point so the registry's cache entry and its queued (offline) stars
+  follow, and the event fans out to every other subscriber.
+
+Until that wiring lands, the registry self-corrects on the next successful
+refresh (the server list is keyed by the new id), but open tabs and the
+star queue would keep a dead id — hook the adapter's re-point paths into
+these two seams when connecting `setDocumentStore`.

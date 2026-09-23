@@ -35,6 +35,17 @@ All application windows run with the full Electron renderer lockdown:
   token and force at most one refresh-and-retry on a 401, and the renderer
   learns only `{ok, status?}` probe verdicts — never a token, URL, or
   response body.
+- The cloud document list (home "Cloud documents" section, server-side
+  recents/starred) rides the same main-process client through a registry in
+  `apps/shell/src/main/auth/cloud-docs.ts`: channels `cloud:list-documents`,
+  `cloud:toggle-starred`, `cloud:mark-opened`, and the
+  `cloud:documents-changed` push are zod-validated in both directions, and
+  only document metadata (id, name, kind, size, version, star/open stamps)
+  ever crosses to the renderer. A `cloudId` is accepted only as a non-empty
+  bounded string and is URL-encoded before it touches a request path. The
+  registry's on-disk cache (`cloud-documents.json`) is bound to a salted
+  hash of the verified `sub`, so one account's cached list is unreadable —
+  and dropped — under any other account.
 
 ## Threat Model: AI-Generated Layout Scripts (slides)
 

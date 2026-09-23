@@ -33,6 +33,12 @@ import type {
   AuthSessionChangedPayload,
   AuthSessionSnapshot,
 } from '../shared/auth-api'
+import { CLOUD_DOCS_CHANNELS } from '../shared/cloud-docs-api'
+import type {
+  CloudDocsApi,
+  CloudDocumentsChangedPayload,
+  CloudDocumentsSnapshot,
+} from '../shared/cloud-docs-api'
 import { INTEGRATIONS_CHANNELS } from '../shared/integrations-api'
 import type {
   IntegrationsApi,
@@ -557,6 +563,34 @@ const authApi: AuthApi & SessionApi = {
 }
 
 contextBridge.exposeInMainWorld('aiOfficeAuth', authApi)
+
+// cloud-documents bridge (Phase 7d home cloud section): cached server
+// document metadata only — never a token, URL, or response body. The main
+// process zod-validates every payload in both directions.
+const cloudDocsApi: CloudDocsApi = {
+  async listDocuments() {
+    return (await ipcRenderer.invoke(CLOUD_DOCS_CHANNELS.listDocuments)) as CloudDocumentsSnapshot
+  },
+  async toggleStarred(cloudId, starred) {
+    if (typeof cloudId !== 'string' || !cloudId) throw new Error('Invalid cloudId.')
+    return (await ipcRenderer.invoke(CLOUD_DOCS_CHANNELS.toggleStarred, {
+      cloudId,
+      starred,
+    })) as CloudDocumentsSnapshot
+  },
+  async markOpened(cloudId) {
+    if (typeof cloudId !== 'string' || !cloudId) throw new Error('Invalid cloudId.')
+    await ipcRenderer.invoke(CLOUD_DOCS_CHANNELS.markOpened, { cloudId })
+  },
+  onDocumentsChanged(handler) {
+    const listener = (_event: IpcRendererEvent, payload: CloudDocumentsChangedPayload) =>
+      handler(payload)
+    ipcRenderer.on(CLOUD_DOCS_CHANNELS.documentsChanged, listener)
+    return () => ipcRenderer.removeListener(CLOUD_DOCS_CHANNELS.documentsChanged, listener)
+  },
+}
+
+contextBridge.exposeInMainWorld('aiOfficeCloud', cloudDocsApi)
 
 // open documents dragged from the OS anywhere over Home or the tab strip
 installDropOpenBridge()
