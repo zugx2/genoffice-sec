@@ -6,14 +6,43 @@
  */
 
 /**
- * Identity of a stored document. Path-keyed for the local adapter; a
- * server-assigned cloud document id is the planned addition for the
- * remote/hybrid adapters (a later task) — ops keep this shape, so the ref
- * grows a field instead of the call sites reshaping.
+ * Identity of a stored document. Path-keyed for the local adapter; the
+ * remote/hybrid adapters key their server ops by the cloud id and the
+ * version they last saw — ops keep this shape, so the ref grew fields
+ * instead of the call sites reshaping.
+ *
+ * A ref is a mutable handle the caller keeps for one open document: the
+ * remote/hybrid adapters record `cloudId` / `version` / `conflicted` back
+ * onto the object they are handed (create fills the id in, every download
+ * and upload refreshes the version), so the caller's next op on the same
+ * ref targets the same server document. Hand the adapter the same object
+ * for the lifetime of the document, not a fresh literal per call.
  */
 export interface DocumentRef {
-  /** Absolute path of the document file (the only key today). */
+  /** Absolute path of the document file (the local adapter's key). */
   path: string
+  /**
+   * Server-assigned cloud document id. Set by the remote/hybrid adapters on
+   * the save that creates the document (and again when a save lands as a
+   * conflict copy); remote ops are keyed by it, local ops by `path`.
+   */
+  cloudId?: string
+  /**
+   * Server version of the bytes last read or written — the `If-Match` /
+   * ETag value the backend documents API uses. Maintained by the
+   * remote/hybrid adapters on every download and upload; `undefined` means
+   * unknown, and the next upload goes out unguarded (last-writer-wins).
+   */
+  version?: number
+  /**
+   * True when the last save landed as a conflict copy: the server held a
+   * newer version, so the bytes were stored as a NEW cloud document and
+   * `cloudId` now points at it (the previous copy is untouched server-side;
+   * the local file in hybrid mode is untouched too). Cleared again by the
+   * next clean save. Surface it to the user — the design resolves
+   * conflicts as copies, never as silent overwrites.
+   */
+  conflicted?: boolean
 }
 
 /** Cheap metadata of the stored bytes (size caps, external-change checks). */
@@ -51,6 +80,11 @@ export interface RecoveryStamp {
  * `ownerId` is the id of the editing surface (a webContents id in the docs
  * pilot): grants and recorded disk states are per-owner, so a closed tab
  * loses exactly its own.
+ *
+ * Adapters: `LocalDocumentStore` (filesystem, path-keyed),
+ * `RemoteDocumentStore` (server-only, cloud-id-keyed, ephemeral scratch for
+ * engines that need a real file), `HybridDocumentStore` (local working copy
+ * + upload-on-save mirror).
  */
 export interface DocumentStore {
   // ── stored bytes ────────────────────────────────────────────────────────
@@ -95,6 +129,13 @@ export interface DocumentStore {
    * Re-key an owner's grant and recorded disk state after the file was renamed
    * or moved on disk, so the next save accepts the new path and keeps its
    * external-change baseline.
+   *
+   * Local-adapter only: it re-keys filesystem identity, and the documents
+   * API has no rename/move operation (a server document's name changes via
+   * an update's metadata, its id never moves). The remote adapter no-ops
+   * beyond its path-keyed bookkeeping, and the hybrid adapter delegates to
+   * its local half — renaming a cloud document alongside a local rename is
+   * unresolved design (docs/cloud-storage.md).
    */
   renameOwnerPath(ownerId: number, oldPath: string, newPath: string): void
 

@@ -2991,13 +2991,24 @@ let documentStore: DocumentStore | null = null
  * The DocumentStore the docs save/open handlers route through: the local
  * filesystem adapter today (same semantics the handlers inlined before the
  * abstraction — atomic writes, per-renderer write grants, external-change
- * detection, recovery copies, originals archive). A later task installs a
- * routing implementation (remote/hybrid per the storage-mode setting) the
- * same way setProjectApi swaps the ProjectApi.
+ * detection, recovery copies, originals archive). The shell installs a
+ * routing implementation (remote/hybrid per the storage-mode setting) via
+ * {@link setDocumentStore}, the same way setProjectApi swaps the ProjectApi;
+ * standalone apps never install one and stay local.
  */
 function getDocumentStore(): DocumentStore {
   if (!documentStore) documentStore = new LocalDocumentStore(app.getPath('userData'))
   return documentStore
+}
+
+/**
+ * Install/replace the DocumentStore the docs handlers route through (the
+ * storage-mode seam). Call it before any document opens: the store holds
+ * per-owner write grants and recovery epochs, so swapping it mid-session
+ * drops that bookkeeping. The default stays the local adapter.
+ */
+export function setDocumentStore(store: DocumentStore): void {
+  documentStore = store
 }
 
 let projectStore: ProjectStore | null = null
