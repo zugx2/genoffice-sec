@@ -21,7 +21,11 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { CloudDocumentsRegistry, cloudDocsOwner } from '../src/main/auth/cloud-docs'
+import {
+  CloudDocumentsRegistry,
+  cloudDocsOwner,
+  MIN_AUTO_REFRESH_MS,
+} from '../src/main/auth/cloud-docs'
 import type { BackendClient } from '../src/main/auth/backend-client'
 
 /** A scripted backend surface: the shared client's fetch, results scripted per test. */
@@ -424,6 +428,166 @@ describe('change events', () => {
     fetchMock.mockResolvedValueOnce(jsonResponse(200, { starred: true }))
     await registry.toggleStarred('doc-1', true)
     expect(reasons).toEqual(['refreshed', 'starred'])
+  })
+
+  it('do not fire when a refresh changed nothing (syncedAt alone is not a change)', async () => {
+    const registry = makeRegistry({
+      client: async () => ({ fetch: fetchMock }) as unknown as BackendClient,
+    })
+    const reasons: string[] = []
+    registry.onChange((reason) => reasons.push(reason))
+
+    // first sync: empty → one document, a real change
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { documents: [DOC('doc-1')] }))
+    await registry.refresh()
+    expect(reasons).toEqual(['refreshed'])
+
+    // second sync returns the identical list: nothing to announce
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { documents: [DOC('doc-1')] }))
+    await registry.refresh()
+    expect(reasons).toEqual(['refreshed'])
+
+    // a genuine server-side change does announce
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(200, { documents: [DOC('doc-1', { name: 'renamed.md' })] }),
+    )
+    await registry.refresh()
+    expect(reasons).toEqual(['refreshed', 'refreshed'])
+  })
+})
+
+describe('autoRefresh (the renderer-driven kick, rate-limited)', () => {
+  const T = 1_700_000_000_000
+
+  it('fetches on the first kick, then skips within the interval — no list→push→list loop', async () => {
+    const registry = makeRegistry({
+      client: async () => ({ fetch: fetchMock }) as unknown as BackendClient,
+    })
+    clock.mockReturnValue(T)
+    fetchMock.mockResolvedValue(jsonResponse(200, { documents: [DOC('doc-1')] }))
+
+    await registry.autoRefresh()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+    // the push the section answers with makes it list again — that second
+    // kick must NOT fetch: same data, within the interval
+    await registry.autoRefresh()
+    await registry.autoRefresh()
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+
+    // after the interval the kick fetches again
+    clock.mockReturnValue(T + MIN_AUTO_REFRESH_MS)
+    await registry.autoRefresh()
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('skips the interval gate while stale (a failed sync retries on the next kick)', async () => {
+    const registry = makeRegistry({
+      client: async () => ({ fetch: fetchMock }) as unknown as BackendClient,
+    })
+    clock.mockReturnValue(T)
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { documents: [DOC('doc-1')] }))
+    await registry.autoRefresh()
+
+    // past the interval the kick runs again and the sync fails → stale
+    clock.mockReturnValue(T + MIN_AUTO_REFRESH_MS)
+    fetchMock.mockRejectedValueOnce(new Error('offline'))
+    await registry.autoRefresh()
+    expect(registry.snapshot().stale).toBe(true)
+
+    // still within that interval, but stale: the next kick retries at once
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { documents: [DOC('doc-1')] }))
+    await registry.autoRefresh()
+    expect(fetchMock).toHaveBeenCalledTimes(3)
+    expect(registry.snapshot().stale).toBe(false)
+  })
+
+  it('shares the in-flight refresh (single-flight): a kick during a fetch adds nothing', async () => {
+    const registry = makeRegistry({
+      client: async () => ({ fetch: fetchMock }) as unknown as BackendClient,
+    })
+    clock.mockReturnValue(T)
+    let release: ((value: Response) => void) | undefined
+    fetchMock.mockReturnValue(
+      new Promise<Response>((resolve) => {
+        release = resolve
+      }),
+    )
+    const a = registry.autoRefresh()
+    const b = registry.autoRefresh()
+    release!(jsonResponse(200, { documents: [DOC('doc-1')] }))
+    await Promise.all([a, b])
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('serves nothing while signed out', async () => {
+    const registry = makeRegistry({
+      client: async () => ({ fetch: fetchMock }) as unknown as BackendClient,
+    })
+    sub = null
+    fetchMock.mockResolvedValue(jsonResponse(200, { documents: [DOC('doc-1')] }))
+    const snapshot = await registry.autoRefresh()
+    expect(snapshot.available).toBe(false)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
+describe('sessionChanged (auth transitions reach the registry immediately)', () => {
+  it('sign-out clears the cache and pushes the change — the rows cannot linger', async () => {
+    const registry = makeRegistry({
+      client: async () => ({ fetch: fetchMock }) as unknown as BackendClient,
+    })
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { documents: [DOC('doc-1')] }))
+    await registry.refresh()
+    expect(registry.snapshot().available).toBe(true)
+
+    const reasons: string[] = []
+    registry.onChange((reason) => reasons.push(reason))
+
+    sub = null
+    registry.sessionChanged()
+    expect(registry.snapshot().available).toBe(false)
+    expect(registry.document('doc-1')).toBeUndefined()
+    expect(reasons).toEqual(['refreshed'])
+  })
+
+  it('an account switch drops the previous owner’s rows and re-lists for the new owner', async () => {
+    const registry = makeRegistry({
+      client: async () => ({ fetch: fetchMock }) as unknown as BackendClient,
+    })
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { documents: [DOC('doc-1')] }))
+    await registry.refresh()
+    expect(registry.snapshot().documents).toHaveLength(1)
+
+    const reasons: string[] = []
+    registry.onChange((reason) => reasons.push(reason))
+
+    sub = 'user-b'
+    registry.sessionChanged()
+    // B has no cache on this machine: unavailable until B's first sync
+    expect(registry.snapshot().available).toBe(false)
+    expect(registry.document('doc-1')).toBeUndefined()
+    expect(reasons).toEqual(['refreshed'])
+
+    // the section's answer to the push is a list, whose kick fetches B's list
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { documents: [DOC('doc-b')] }))
+    const snapshot = await registry.autoRefresh()
+    expect(snapshot.documents.map((d) => d.cloudId)).toEqual(['doc-b'])
+  })
+
+  it('emits once per actual change — a repeat call with the same session stays silent', async () => {
+    const registry = makeRegistry({
+      client: async () => ({ fetch: fetchMock }) as unknown as BackendClient,
+    })
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { documents: [DOC('doc-1')] }))
+    await registry.refresh()
+
+    const reasons: string[] = []
+    registry.onChange((reason) => reasons.push(reason))
+
+    sub = null
+    registry.sessionChanged()
+    registry.sessionChanged() // same session again: nothing new to announce
+    expect(reasons).toEqual(['refreshed'])
   })
 })
 

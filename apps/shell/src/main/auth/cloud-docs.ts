@@ -14,7 +14,13 @@
  * - `refresh()`: re-fetch `GET /documents` through the shared backend client
  *   (SSRF-gated construction, Bearer + refresh-once-on-401); only runs
  *   signed-in. A failed refresh keeps the cache and raises the stale flag
- *   rather than wiping the offline view;
+ *   rather than wiping the offline view. `autoRefresh()` is the
+ *   renderer-driven variant, rate-limited so a live section's list → push →
+ *   list cycle cannot become a fetch loop;
+ * - change events fire only when the renderer-visible content actually
+ *   changed (`syncedAt` alone never triggers one), and `sessionChanged()`
+ *   re-evaluates the account binding on every auth transition so a sign-out
+ *   clears the rows even while the panel sits idle;
  * - `toggleStarred()`: optimistically applies the flag to the cache and
  *   sends `PUT /documents/:id/starred`. When the send fails (offline / dead
  *   session) the toggle stays in a local queue and is replayed on the next
@@ -90,7 +96,21 @@ export interface CloudDocumentsRegistryOptions {
   storePath: string
   /** clock seam for tests */
   now?: () => number
+  /**
+   * How long a renderer-driven kick waits before fetching again
+   * (autoRefresh's rate limit; test seam, default {@link MIN_AUTO_REFRESH_MS}).
+   */
+  minAutoRefreshMs?: number
 }
+
+/**
+ * The auto-refresh rate limit. A live cloud section reads the list and
+ * re-reads on every push; without a floor that list → push → list cycle
+ * would keep a fetch (and a cache write) running for as long as the folder
+ * panel is mounted. 30 s matches the "cheap first, sync behind it" feel of
+ * the Genspark cloud-projects view.
+ */
+export const MIN_AUTO_REFRESH_MS = 30_000
 
 /**
  * Account tag the cache is bound to: a salted hash of the verified `sub`
@@ -106,6 +126,9 @@ export class CloudDocumentsRegistry {
   private readonly session: CloudDocsSession
   private readonly storePath: string
   private readonly now: () => number
+  private readonly minAutoRefreshMs: number
+  /** when a fetch was last attempted (autoRefresh's rate-limit clock) */
+  private lastFetchAt = 0
 
   /** the live cache; null until a list was loaded for the current account */
   private documents: CloudDocumentEntry[] | null = null
@@ -124,6 +147,7 @@ export class CloudDocumentsRegistry {
     this.session = options.session
     this.storePath = options.storePath
     this.now = options.now ?? ((): number => Date.now())
+    this.minAutoRefreshMs = options.minAutoRefreshMs ?? MIN_AUTO_REFRESH_MS
     this.loadFromDisk()
   }
 
@@ -210,6 +234,11 @@ export class CloudDocumentsRegistry {
    */
   snapshot(): CloudDocumentsSnapshot {
     this.ensureOwnerLoaded()
+    return this.snapshotUnchecked()
+  }
+
+  /** `snapshot()` without the owner re-check — the caller controls that. */
+  private snapshotUnchecked(): CloudDocumentsSnapshot {
     if (this.documents === null) {
       return { available: false, documents: [], syncedAt: 0, stale: false, pendingStars: 0 }
     }
@@ -236,6 +265,28 @@ export class CloudDocumentsRegistry {
   // ── Refresh ─────────────────────────────────────────────────────────
 
   /**
+   * The renderer-driven kick behind `cloud:list-documents` — rate-limited,
+   * unlike {@link refresh}: it only fetches when nothing is cached yet, the
+   * cache is stale, or the last fetch is older than the auto-refresh
+   * interval; otherwise it is a no-op. A live cloud section reads the list
+   * and re-reads on every push, so without this floor that list → push →
+   * list cycle would keep a fetch (and a cache write) running for as long
+   * as the folder panel is mounted.
+   */
+  autoRefresh(): Promise<CloudDocumentsSnapshot> {
+    this.ensureOwnerLoaded()
+    if (this.owner() === '') return Promise.resolve(this.snapshot())
+    if (
+      this.documents !== null &&
+      !this.stale &&
+      this.now() - this.lastFetchAt < this.minAutoRefreshMs
+    ) {
+      return Promise.resolve(this.snapshot())
+    }
+    return this.refresh()
+  }
+
+  /**
    * Re-sync the list from the server. Replays the star queue first (so the
    * fetched list reflects the delivered toggles), then fetches. Single-flight:
    * concurrent callers share one run. A failure keeps the cache, raises the
@@ -256,7 +307,24 @@ export class CloudDocumentsRegistry {
     return run
   }
 
+  /**
+   * The renderer-visible content of a snapshot minus `syncedAt` — that field
+   * moves on every successful refresh, so including it would make every
+   * refresh "a change". Everything else (rows, stale flag, pending count) is
+   * what a push exists to announce.
+   */
+  private viewOf(snap: CloudDocumentsSnapshot): string {
+    return JSON.stringify([snap.available, snap.documents, snap.stale, snap.pendingStars])
+  }
+
+  /** Emits `reason` only when the renderer-visible content actually changed. */
+  private maybeEmitChange(reason: CloudDocsChangeReason, viewBefore: string): void {
+    if (this.viewOf(this.snapshotUnchecked()) === viewBefore) return
+    this.emitChange(reason)
+  }
+
   private async doRefresh(owner: string): Promise<CloudDocumentsSnapshot> {
+    const viewBefore = this.viewOf(this.snapshotUnchecked())
     let client: BackendClient | undefined
     try {
       client = await this.client()
@@ -265,8 +333,10 @@ export class CloudDocumentsRegistry {
     }
     if (client === undefined) {
       this.stale = this.documents !== null
+      this.maybeEmitChange('refreshed', viewBefore)
       return this.snapshot()
     }
+    this.lastFetchAt = this.now()
     try {
       await this.replayStars(client)
       const response = await client.fetch('/documents')
@@ -277,7 +347,6 @@ export class CloudDocumentsRegistry {
       this.syncedAt = this.now()
       this.stale = false
       this.persist()
-      this.emitChange('refreshed')
     } catch (error) {
       // offline / server down / dead session: keep the last-known list and
       // raise the stale flag; queued stars survive for the next refresh
@@ -289,7 +358,28 @@ export class CloudDocumentsRegistry {
       // the old account's data and must not be served
       this.loadFromDisk()
     }
+    // only a real content change is worth a push: a no-op refresh emitting
+    // would make the section re-list, whose kick is the next refresh —
+    // bounded by autoRefresh's interval, but pointless
+    this.maybeEmitChange('refreshed', viewBefore)
     return this.snapshot()
+  }
+
+  // ── Session changes ─────────────────────────────────────────────────
+
+  /**
+   * A session change (sign-in, sign-out, switch) re-evaluates the account
+   * binding immediately and pushes a change event when what the renderer
+   * should see differs. Without this, signing out would leave the previous
+   * account's document names on screen: nothing else reads the registry
+   * while the home panel sits idle, so the lazy owner re-check would never
+   * run. Wired to the session manager's `onSessionChanged` in the IPC
+   * registration.
+   */
+  sessionChanged(): void {
+    const viewBefore = this.viewOf(this.snapshotUnchecked())
+    this.ensureOwnerLoaded()
+    this.maybeEmitChange('refreshed', viewBefore)
   }
 
   /** Delivers every queued star toggle, dropping the ones the server took. */

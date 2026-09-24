@@ -43,6 +43,8 @@ vi.mock('electron', () => ({
 // ── fake auth seams (the module may only talk to these) ──────────────────
 
 let sessionStatus: 'authenticated' | 'anonymous' = 'anonymous'
+/** the session-manager subscription the module registers (captured per load) */
+let sessionHandler: ((payload: { status: string }) => void) | undefined
 
 vi.mock('../src/main/auth/ipc', () => ({
   getAuthSessionManager: () => ({
@@ -50,6 +52,10 @@ vi.mock('../src/main/auth/ipc', () => ({
       sessionStatus === 'authenticated'
         ? { status: 'authenticated', profile: { sub: 'user-1', roles: [] } }
         : { status: 'anonymous' },
+    onSessionChanged: (handler: (payload: { status: string }) => void) => {
+      sessionHandler = handler
+      return () => {}
+    },
   }),
   getBackendClient: () => undefined,
 }))
@@ -70,7 +76,9 @@ class FakeRegistry {
     stale: false,
     pendingStars: 0,
   }
+  autoRefresh = vi.fn(async (): Promise<CloudDocumentsSnapshot> => this.snapshotMock)
   refresh = vi.fn(async (): Promise<CloudDocumentsSnapshot> => this.snapshotMock)
+  sessionChanged = vi.fn()
   toggleStarred = vi.fn(async (): Promise<CloudDocumentsSnapshot> => this.snapshotMock)
   markOpened = vi.fn(async (): Promise<void> => undefined)
   onChange = vi.fn().mockReturnValue(vi.fn())
@@ -123,6 +131,7 @@ async function loadIpc() {
   handlers.clear()
   senderSend.mockClear()
   sessionStatus = 'anonymous'
+  sessionHandler = undefined
   const module = await import('../src/main/auth/cloud-docs-ipc')
   module.registerCloudDocsIpc({ storePath: join(userDataDir, 'cloud-documents.json') })
   return module
@@ -165,7 +174,7 @@ describe('cloud-docs ipc wire contract', () => {
     expect(module.getCloudDocumentsRegistry()).toBe(first)
   })
 
-  it('serves the cached snapshot without refreshing while signed out', async () => {
+  it('serves the cached snapshot without kicking anything while signed out', async () => {
     await loadIpc()
     await expect(invoke(CLOUD_DOCS_CHANNELS.listDocuments)).resolves.toEqual({
       available: false,
@@ -175,16 +184,20 @@ describe('cloud-docs ipc wire contract', () => {
       pendingStars: 0,
     })
     await flush()
+    expect(registry().autoRefresh).not.toHaveBeenCalled()
     expect(registry().refresh).not.toHaveBeenCalled()
   })
 
-  it('kicks a background refresh on list while signed in (cache still served)', async () => {
+  it('kicks the rate-limited background refresh on list while signed in (cache still served)', async () => {
     await loadIpc()
     sessionStatus = 'authenticated'
     const result = await invoke(CLOUD_DOCS_CHANNELS.listDocuments)
     expect(result).toMatchObject({ available: false }) // the cached answer
     await flush()
-    expect(registry().refresh).toHaveBeenCalledTimes(1)
+    // the kick goes through autoRefresh (the interval-gated variant), so a
+    // live section's list → push → list cycle cannot become a fetch loop
+    expect(registry().autoRefresh).toHaveBeenCalledTimes(1)
+    expect(registry().refresh).not.toHaveBeenCalled()
   })
 
   it('validates the snapshot before it crosses to the renderer', async () => {
@@ -292,5 +305,15 @@ describe('cloud-docs ipc wire contract', () => {
     sessionStatus = 'anonymous'
     expect(options.session.currentSub()).toBeNull()
     expect(options.storePath).toBe(join(userDataDir, 'cloud-documents.json'))
+  })
+
+  it('forwards session changes to the registry (the sign-out trigger)', async () => {
+    await loadIpc()
+    expect(sessionHandler).toBeDefined() // subscribed at registration
+    sessionHandler!({ status: 'anonymous' })
+    expect(registry().sessionChanged).toHaveBeenCalledTimes(1)
+    // and again on the next transition (an account switch)
+    sessionHandler!({ status: 'authenticated' })
+    expect(registry().sessionChanged).toHaveBeenCalledTimes(2)
   })
 })

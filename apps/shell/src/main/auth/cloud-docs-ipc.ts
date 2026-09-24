@@ -7,8 +7,8 @@
  * too, so a shape bug fails loudly instead of drifting to the renderer):
  *
  * - `cloud:list-documents` — the registry's cached snapshot; when signed in
- *   it also kicks off a background refresh whose result arrives over
- *   `cloud:documents-changed`;
+ *   it also kicks the registry's rate-limited background refresh, whose
+ *   result arrives over `cloud:documents-changed` (only on a real change);
  * - `cloud:toggle-starred` — `{cloudId, starred}`; offline-safe (queued in
  *   the registry, replayed on the next refresh);
  * - `cloud:mark-opened` — `{cloudId}`; the server-side recents stamp;
@@ -132,14 +132,22 @@ export function registerCloudDocsIpc(deps: CloudDocsIpcDeps = {}): void {
     }
   })
 
+  // A session change re-evaluates the registry's account binding immediately:
+  // sign-out must clear the cloud section even while the panel sits idle and
+  // nothing else would read the registry; an account switch re-lists for the
+  // new owner. The registry emits only when the visible content changed.
+  getAuthSessionManager()?.onSessionChanged(() => registry?.sessionChanged())
+
   ipcMain.handle(CLOUD_DOCS_CHANNELS.listDocuments, async (_event, input: unknown) => {
     listDocumentsArgs.parse(input)
     const live = registry
     if (live === undefined) throw new Error('cloud-documents registry is not registered')
     const snapshot = live.snapshot()
-    // serve the cache instantly; when signed in, refresh in the background
-    // so the fresh list arrives pushed over cloud:documents-changed
-    if (currentSub() !== null) void waitForProxy().then(() => live.refresh())
+    // serve the cache instantly; when signed in, kick the rate-limited
+    // background refresh — its result arrives pushed over
+    // cloud:documents-changed, and autoRefresh's interval is what keeps the
+    // list → push → list cycle a section produces from becoming a fetch loop
+    if (currentSub() !== null) void waitForProxy().then(() => live.autoRefresh())
     return snapshotSchema.parse(snapshot)
   })
 
