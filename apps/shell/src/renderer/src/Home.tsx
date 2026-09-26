@@ -25,6 +25,7 @@ import type {
   CloudDocumentEntry,
   CloudDocumentsSnapshot,
 } from '../../shared/cloud-docs-api'
+import type { OpenCloudDocumentError, StorageModeApi } from '../../shared/storage-mode-api'
 import { useDismissablePopover } from '@genoffice/ui'
 import { fileCountKey, visiblePageCount } from './counts'
 import { useI18n } from './locale'
@@ -40,6 +41,8 @@ declare global {
     aiOfficeAuth?: AuthApi
     /** cloud-documents bridge (metadata only, never URLs/tokens); optional in tests */
     aiOfficeCloud?: CloudDocsApi
+    /** storage-mode bridge (mode + typed results, never URLs/tokens); optional in tests */
+    aiOfficeStorage?: StorageModeApi
   }
 }
 
@@ -1360,15 +1363,19 @@ function DropToOpenOverlay(): ReactElement | null {
  * stale badge, and a star toggled offline is applied locally and replayed
  * main-side (the count shows as pending).
  *
- * Clicking a row records the open (the server-side recents stamp). Opening
- * the editor itself — download-to-memory and routing by storage mode — is
- * the Phase 7 rollout task's concern, not this section's.
+ * Clicking a row records the open (the server-side recents stamp) and opens
+ * the document: main-side routing picks the adapter per storage mode (remote
+ * → a scratch-backed docs tab keyed by cloudId; hybrid/local → a download
+ * into the documents folder + a path-keyed tab). A typed failure is surfaced
+ * as a localized line under the list — signed out, an unsupported editor
+ * kind, an unknown id, or a dead transport — never a raw error string.
  */
 export function CloudDocumentsSection() {
   const { t } = useI18n()
   const [snapshot, setSnapshot] = useState<CloudDocumentsSnapshot | null>(null)
   const [open, setOpen] = useState(true)
   const [syncing, setSyncing] = useState(false)
+  const [openError, setOpenError] = useState<OpenCloudDocumentError | null>(null)
 
   const list = () => {
     void window.aiOfficeCloud?.listDocuments().then((next) => {
@@ -1405,6 +1412,15 @@ export function CloudDocumentsSection() {
     void window.aiOfficeCloud?.markOpened(doc.cloudId)
   }
 
+  /** Row click: stamp the open server-side, then open the routed document. */
+  const openDocument = (doc: CloudDocumentEntry) => {
+    markOpened(doc)
+    if (!window.aiOfficeStorage) return
+    void window.aiOfficeStorage
+      .openDocument(doc.cloudId)
+      .then((result) => setOpenError(result.ok ? null : result.error))
+  }
+
   // most recently opened first (never-opened documents fall back to creation
   // time), so an open visibly moves its row up — the recents semantics
   const documents = [...(snapshot?.documents ?? [])].sort(
@@ -1417,9 +1433,9 @@ export function CloudDocumentsSection() {
         className="cloud-docs-row"
         role="button"
         tabIndex={0}
-        onClick={() => markOpened(doc)}
+        onClick={() => openDocument(doc)}
         onKeyDown={(event) => {
-          if (event.key === 'Enter' && event.target === event.currentTarget) markOpened(doc)
+          if (event.key === 'Enter' && event.target === event.currentTarget) openDocument(doc)
         }}
       >
         <span className="tree-icon" aria-hidden="true">
@@ -1462,6 +1478,16 @@ export function CloudDocumentsSection() {
       )}
     </>
   )
+
+  /** A typed open failure → one localized line (no raw server text crosses). */
+  const openErrorKeyOf = (error: OpenCloudDocumentError): StringKey =>
+    error === 'sign-in-required'
+      ? 'cloudOpenErrSignIn'
+      : error === 'unsupported-kind'
+        ? 'cloudOpenErrKind'
+        : error === 'not-found'
+          ? 'cloudOpenErrNotFound'
+          : 'cloudOpenErrUnavailable'
 
   // without the bridge (an older preload) there is nothing to list
   if (!window.aiOfficeCloud) return null
@@ -1506,6 +1532,11 @@ export function CloudDocumentsSection() {
         <>
           {(snapshot.stale || snapshot.pendingStars > 0) && (
             <div className="cloud-docs-flags">{renderFlags(snapshot)}</div>
+          )}
+          {openError !== null && (
+            <p className="cloud-docs-error" role="alert">
+              {t(openErrorKeyOf(openError))}
+            </p>
           )}
           {documents.length === 0 ? (
             <p className="cloud-docs-hint">{t('cloudDocsEmpty')}</p>

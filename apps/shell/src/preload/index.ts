@@ -39,6 +39,15 @@ import type {
   CloudDocumentsChangedPayload,
   CloudDocumentsSnapshot,
 } from '../shared/cloud-docs-api'
+import { STORAGE_MODE_CHANNELS } from '../shared/storage-mode-api'
+import type {
+  MigrationProgressPayload,
+  MigrateDocumentsResult,
+  OpenCloudDocumentResult,
+  SetStorageModeResult,
+  StorageModeApi,
+  StorageModeState,
+} from '../shared/storage-mode-api'
 import { INTEGRATIONS_CHANNELS } from '../shared/integrations-api'
 import type {
   IntegrationsApi,
@@ -591,6 +600,46 @@ const cloudDocsApi: CloudDocsApi = {
 }
 
 contextBridge.exposeInMainWorld('aiOfficeCloud', cloudDocsApi)
+
+// storage-mode bridge (Phase 7e): the persisted mode, its guarded mutation,
+// open-from-cloud, and the opt-in mode-switch migration. Only typed results
+// and stable error codes cross — never a token, URL, or raw error message;
+// the main process zod-validates every payload in both directions.
+const storageModeApi: StorageModeApi = {
+  async getStorageMode() {
+    return (await ipcRenderer.invoke(STORAGE_MODE_CHANNELS.getStorageMode)) as StorageModeState
+  },
+  async setStorageMode(mode) {
+    return (await ipcRenderer.invoke(STORAGE_MODE_CHANNELS.setStorageMode, {
+      mode,
+    })) as SetStorageModeResult
+  },
+  async openDocument(cloudId) {
+    if (typeof cloudId !== 'string' || !cloudId) throw new Error('Invalid cloudId.')
+    return (await ipcRenderer.invoke(STORAGE_MODE_CHANNELS.openDocument, {
+      cloudId,
+    })) as OpenCloudDocumentResult
+  },
+  async migrateDocuments(direction, retry) {
+    return (await ipcRenderer.invoke(STORAGE_MODE_CHANNELS.migrateDocuments, {
+      direction,
+      ...(retry !== undefined ? { retry } : {}),
+    })) as MigrateDocumentsResult
+  },
+  onStorageModeChanged(handler) {
+    const listener = (_event: IpcRendererEvent, state: StorageModeState) => handler(state)
+    ipcRenderer.on(STORAGE_MODE_CHANNELS.storageModeChanged, listener)
+    return () => ipcRenderer.removeListener(STORAGE_MODE_CHANNELS.storageModeChanged, listener)
+  },
+  onMigrationProgress(handler) {
+    const listener = (_event: IpcRendererEvent, payload: MigrationProgressPayload) =>
+      handler(payload)
+    ipcRenderer.on(STORAGE_MODE_CHANNELS.migrationProgress, listener)
+    return () => ipcRenderer.removeListener(STORAGE_MODE_CHANNELS.migrationProgress, listener)
+  },
+}
+
+contextBridge.exposeInMainWorld('aiOfficeStorage', storageModeApi)
 
 // open documents dragged from the OS anywhere over Home or the tab strip
 installDropOpenBridge()

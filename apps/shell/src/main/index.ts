@@ -77,6 +77,7 @@ import {
   restoreAuthSession,
 } from './auth/ipc'
 import { registerCloudDocsIpc } from './auth/cloud-docs-ipc'
+import { getDocumentStoreRouter, registerStorageModeIpc } from './auth/storage-mode-ipc'
 import { RoutingProjectApi } from './auth/project-routing'
 import { RemoteProjectApi } from '@genoffice/project-store'
 import {
@@ -146,6 +147,8 @@ import {
   defaultSaveDir,
   uniquePathIn,
   authorizeMcpDocWrite,
+  setDocumentStore,
+  setRecentPathFilter,
 } from '../../../docs/src/main/docs-main'
 import { blankXlsxBuffer } from '@genoffice/xlsx-gateway/gateway/csv-import'
 import { blankPdfBuffer } from '../../../pdf/src/main/blank-pdf'
@@ -2674,6 +2677,11 @@ function createShellWindow(): void {
   // contract as the sheets/slides opened hooks (a plain save to the original
   // path never renames the tab, so the open must — r115)
   setDocsFileOpenedHook((wcId, path) => {
+    // a remote-mode open loaded from the scratch space: the tab already holds
+    // its cloudId identity and the server-side name, and a recents row would
+    // point at a temp file — re-titling it to the scratch basename would only
+    // mangle the strip
+    if (getDocumentStoreRouter()?.isScratchPath(path)) return
     manager.setTabFileFor(wcId, path)
     recordRecentFile(path)
     applyPendingDir(wcId, path)
@@ -4790,6 +4798,54 @@ registerAuthIpc({ waitForProxy: () => proxyBootstrap })
 // registered after auth so the registry can read the session manager and the
 // shared backend client; same proxy-aware fetch stack as the auth traffic
 registerCloudDocsIpc({ waitForProxy: () => proxyBootstrap })
+// storageMode setting + document-store routing + open-from-cloud + the
+// mode-switch migration (Phase 7e): registered after the registry so the
+// router can look cloud documents up by id, and before any window exists so
+// the docs editor's store is routed from its very first open. The router
+// re-resolves (mode, session) per operation — installing it once here is what
+// lets an open tab keep the adapter it was opened under across a mode switch.
+registerStorageModeIpc({
+  documentsDir: () => defaultSaveDir(),
+  // the folder tree's own recursive listing (hidden entries and non-document
+  // files filtered the same way the home tree filters them)
+  listLocalDocuments: (dir) => collectTreeFiles(dir),
+  // the open plan lands in a docs tab: remote documents are keyed by cloudId
+  // (title = server name), downloads by the path the file landed on
+  openCloudTab: (plan) => {
+    const manager = tabManager
+    if (!manager) return false
+    if (plan.kind === 'remote') {
+      const existing = manager.findTabByCloudId(plan.cloudId)
+      if (existing) manager.activateTab(existing.id)
+      else manager.openDocsTab(plan.path, { cloudId: plan.cloudId, title: plan.name })
+      return true
+    }
+    const existing = manager.findTabByPath(plan.path)
+    if (existing) manager.activateTab(existing.id)
+    else manager.openDocsTab(plan.path)
+    return true
+  },
+  // a first save minted the server identity: the tab holding the path follows
+  // it (cloudId tab identity, Phase 7d)
+  bindTabCloudId: (path, cloudId) => {
+    const tab = tabManager?.findTabByPath(path)
+    if (tab) tabManager?.setTabCloudIdFor(tab.webContents.id, cloudId)
+  },
+  // the adapter re-pointed a cloud id (404 self-heal / conflict copy): open
+  // tabs follow so the dead id never lingers in the strip
+  rekeyTabs: (oldCloudId, newCloudId) => {
+    tabManager?.rekeyTabCloudId(oldCloudId, newCloudId)
+  },
+  // the scratch wipe rides Electron's clean-exit path (will-quit fires before
+  // process exit and also covers a quit that never reaches the exit hook)
+  onExit: (wipe) => app.on('will-quit', wipe),
+})
+// the docs editor (the pilot — the other editors roll out in T17) routes its
+// save/open handlers through the storage-mode router from here on
+setDocumentStore(getDocumentStoreRouter()!)
+// remote-routed documents have no local file behind their path: keep them out
+// of the path-keyed recents list (the home cloud view is their surface)
+setRecentPathFilter((path) => getDocumentStoreRouter()?.isCloudOnlyPath(path) === true)
 registerIntegrationsIpc({
   settingsPath: APP_SETTINGS_PATH,
   window: () => shellWindow,
@@ -4896,6 +4952,10 @@ app.whenReady().then(async () => {
   // a registry left by a crashed instance must not block genoffice writes
   ownsOpenDocumentsRegistry = true
   publishOpenDocuments(OPEN_DOCUMENTS_PATH(), [])
+  // stale ephemeral scratch from a crashed run (nothing tracks it anymore, so
+  // the exit wipe never saw it): sweep the whole space now that this instance
+  // holds the single-instance lock — a headless export process never gets here
+  getDocumentStoreRouter()?.sweepStaleScratch()
   if (!app.isPackaged) {
     try {
       writeFileSync(devPidFile(), String(process.pid))
@@ -5083,6 +5143,9 @@ app.on('before-quit', () => {
 app.on('will-quit', () => {
   folderWatcher?.close()
   controlServer?.close()
+  // remote mode's ephemeral scratch must not survive a clean exit (the router
+  // also registers this wipe directly; both are best-effort and idempotent)
+  void getDocumentStoreRouter()?.wipeScratch()
   // a second instance that lost the lock quits too; it must not delete the running editor's list
   if (ownsOpenDocumentsRegistry) clearOpenDocuments(OPEN_DOCUMENTS_PATH())
 })

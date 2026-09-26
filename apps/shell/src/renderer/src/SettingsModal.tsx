@@ -28,6 +28,7 @@ import { useI18n } from './locale'
 import type { StringKey, TFunc } from './locale'
 import type { AccountStatus, AiCatalogEntry, UiTheme } from '../../shared/home-api'
 import type { AuthBackendProbeResult } from '../../shared/auth-api'
+import type { MigrationFailure, StorageMode, StorageModeState } from '../../shared/storage-mode-api'
 import { ProviderLogo } from './provider-logos'
 import { IntegrationsPane, skillUpdateDue } from './IntegrationsPane'
 import './settings.css'
@@ -1020,6 +1021,226 @@ function useExpiryCountdown(expiresAt: number | null): number {
   return remaining
 }
 
+// the three document storage modes (docs/cloud-backend-auth.md): local is the
+// default and needs no session; remote/hybrid require one (the server keeps a
+// copy of every save, so there must be an account to save through)
+const STORAGE_MODE_OPTIONS = [
+  { value: 'local', labelKey: 'storageModeLocal', descKey: 'storageModeLocalDesc' },
+  { value: 'remote', labelKey: 'storageModeRemote', descKey: 'storageModeRemoteDesc' },
+  { value: 'hybrid', labelKey: 'storageModeHybrid', descKey: 'storageModeHybridDesc' },
+] as const satisfies readonly { value: StorageMode; labelKey: StringKey; descKey: StringKey }[]
+
+/** One migration step's failure → its localized line. */
+const MIGRATION_ERROR_KEYS: Readonly<Record<MigrationFailure['error'], StringKey>> = {
+  unavailable: 'migrationErrUnavailable',
+  'not-found': 'migrationErrNotFound',
+  'read-failed': 'migrationErrOther',
+  'write-failed': 'migrationErrOther',
+}
+
+/**
+ * The migration panel's state machine: `offer` is the opt-in dialog a mode
+ * switch returns, `running` shows the pushed per-step progress, `done` shows
+ * the moved count plus the retryable failure list.
+ */
+interface MigrationState {
+  direction: 'upload' | 'download'
+  phase: 'offer' | 'running' | 'done'
+  count: number
+  done: number
+  total: number
+  moved: number
+  failures: MigrationFailure[]
+}
+
+/**
+ * Storage-mode section of the Account pane (Phase 7e): where document files
+ * live. The selector is the ONLY way the setting changes (main-side guard:
+ * picking remote/hybrid while signed out answers a typed error and leaves the
+ * setting alone); a switch that has data to move offers the bulk migration —
+ * opt-in, progress-reported, failures listed and retryable.
+ */
+function StorageModeSection({ t }: { t: TFunc }) {
+  const api = window.aiOfficeStorage
+  const [state, setState] = useState<StorageModeState | null>(null)
+  const [guard, setGuard] = useState(false)
+  const [migration, setMigration] = useState<MigrationState | null>(null)
+
+  useEffect(() => {
+    if (!api) return
+    let alive = true
+    void api.getStorageMode().then((next) => {
+      if (alive) setState(next)
+    })
+    // pushes: a mode change or a session change re-reads (both re-resolve routing)
+    const offChange = api.onStorageModeChanged((next) => setState(next))
+    const offProgress = api.onMigrationProgress((payload) => {
+      setMigration((prev) =>
+        prev === null
+          ? prev
+          : { ...prev, done: payload.done, total: payload.total, failures: payload.failures },
+      )
+    })
+    return () => {
+      alive = false
+      offChange()
+      offProgress()
+    }
+  }, [api])
+
+  const pick = (mode: StorageMode): void => {
+    if (!api || state === null || mode === state.mode) return
+    if (migration !== null && migration.phase !== 'done') return // never flip mid-move
+    setGuard(false)
+    void api
+      .setStorageMode(mode)
+      .then((result) => {
+        if (result.ok) {
+          setState({ mode: result.mode, signedIn: state.signedIn })
+          if (result.migration !== undefined) {
+            setMigration({
+              ...result.migration,
+              phase: 'offer',
+              done: 0,
+              total: 0,
+              moved: 0,
+              failures: [],
+            })
+          } else {
+            setMigration(null) // hybrid → remote/local: nothing to move
+          }
+        } else {
+          // the guard: the setting is unchanged, the message says why
+          setGuard(true)
+        }
+      })
+      .catch(() => {})
+  }
+
+  const runMigration = (retry?: string[]): void => {
+    if (!api || migration === null) return
+    const sources = retry ?? undefined
+    setMigration({ ...migration, phase: 'running', done: 0, moved: 0, failures: [] })
+    void api
+      .migrateDocuments(migration.direction, sources)
+      .then((result) => {
+        setMigration((prev) =>
+          prev !== null && result.ok
+            ? { ...prev, phase: 'done', moved: result.moved, failures: result.failures }
+            : prev,
+        )
+      })
+      .catch(() => {
+        setMigration((prev) => (prev !== null ? { ...prev, phase: 'done' } : prev))
+      })
+  }
+
+  // no bridge (non-shell window / test host) or no answer yet: nothing to show
+  if (!api || state === null) return null
+
+  return (
+    <section className="set-storage">
+      <h4 className="set-pane-subtitle">{t('storageModeTitle')}</h4>
+      <div className="set-mode-list" role="radiogroup" aria-label={t('storageModeTitle')}>
+        {STORAGE_MODE_OPTIONS.map((option) => (
+          <button
+            key={option.value}
+            type="button"
+            role="radio"
+            aria-checked={state.mode === option.value}
+            disabled={migration !== null && migration.phase === 'running'}
+            className={`set-mode-option${state.mode === option.value ? ' active' : ''}`}
+            onClick={() => pick(option.value)}
+          >
+            <span className="set-mode-radio" aria-hidden="true" />
+            <span className="set-field-stack">
+              <span className="set-mode-label">{t(option.labelKey)}</span>
+              <span className="set-field-desc">{t(option.descKey)}</span>
+            </span>
+          </button>
+        ))}
+      </div>
+      {guard && (
+        <div className="set-cloud-error" role="alert">
+          {t('storageModeSignInRequired')}
+        </div>
+      )}
+      {migration !== null && (
+        <div className="set-migration" role="group" aria-label={t('migrationOfferTitle')}>
+          <div className="set-migration-title">{t('migrationOfferTitle')}</div>
+          {migration.phase === 'offer' && (
+            <>
+              <p className="set-migration-body">
+                {migration.count === 0
+                  ? t('migrationOfferEmpty')
+                  : t(
+                      migration.direction === 'upload'
+                        ? 'migrationOfferUpload'
+                        : 'migrationOfferDownload',
+                      { n: migration.count },
+                    )}
+              </p>
+              <div className="set-btn-row">
+                {migration.count > 0 && (
+                  <button className="set-btn primary" onClick={() => runMigration()}>
+                    {t('migrationStart')}
+                  </button>
+                )}
+                <button className="set-btn" onClick={() => setMigration(null)}>
+                  {migration.count > 0 ? t('migrationNotNow') : t('cancel')}
+                </button>
+              </div>
+            </>
+          )}
+          {migration.phase === 'running' && (
+            <p className="set-migration-body" role="status">
+              {t('migrationProgress', { done: migration.done, total: migration.total })}
+            </p>
+          )}
+          {migration.phase === 'done' && (
+            <>
+              <p className="set-migration-body">
+                {t('migrationDone', { n: migration.moved })}
+                {migration.failures.length > 0 &&
+                  ` ${t('migrationFailed', { n: migration.failures.length })}`}
+              </p>
+              {migration.failures.length > 0 && (
+                <ul className="set-migration-failures">
+                  {migration.failures.map((failure) => (
+                    <li key={failure.source}>
+                      <span className="set-migration-name" title={failure.source}>
+                        {failure.name}
+                      </span>
+                      <span className="set-migration-err">
+                        {t(MIGRATION_ERROR_KEYS[failure.error])}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <div className="set-btn-row">
+                {migration.failures.length > 0 && (
+                  <button
+                    className="set-btn"
+                    onClick={() =>
+                      runMigration(migration.failures.map((failure) => failure.source))
+                    }
+                  >
+                    {t('migrationRetry')}
+                  </button>
+                )}
+                <button className="set-btn" onClick={() => setMigration(null)}>
+                  {t('cancel')}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </section>
+  )
+}
+
 /** Cloud-account section of the Account pane: device-flow login/logout + profile */
 function CloudAccountSection({ t }: { t: TFunc }) {
   const { session, loginEvents, login, cancelLogin, logout } = useSession(window.aiOfficeAuth)
@@ -1406,6 +1627,7 @@ export function SettingsModal({
                   )}
                 </div>
                 <CloudAccountSection t={t} />
+                <StorageModeSection t={t} />
               </>
             )}
             {section === 'aiModel' && <AiModelPane t={t} />}

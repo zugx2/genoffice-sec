@@ -57,4 +57,67 @@ describe('home-screen locale tables', () => {
     // a few shared strings (brand names, "PDF", "OK"-style tokens) are fine
     expect(identical.length).toBeLessThan(referenceKeys.length / 4)
   })
+
+  // ── script-family check: a locale must not carry another script's text ──
+  // The T15 incident was Hindi values pasted into the zh-TW block; a generic
+  // guard catches that class of copy-paste for every locale at once. Latin
+  // script is universal (brand names, "PDF", numerals), so only distinctive
+  // scripts are policed, and each locale may use exactly its own family.
+
+  /** script families a locale may legitimately contain (latin always allowed) */
+  const ALLOWED_SCRIPTS: Readonly<Record<string, readonly string[]>> = {
+    zh: ['cjk'],
+    'zh-TW': ['cjk'],
+    ja: ['cjk'], // kana + kanji
+    ko: ['cjk', 'hangul'],
+    th: ['thai'],
+    ru: ['cyrillic'],
+    ar: ['arabic'],
+    he: ['hebrew'],
+    hi: ['devanagari'],
+  }
+  // Latin-script locales (en, fr, de, es, id, pt, it, pl, cs, nl, ms) allow
+  // nothing but latin — every family above that a locale does not list is
+  // an offender when it appears in one of its values.
+
+  const FAMILY_RANGES: ReadonlyArray<[string, RegExp]> = [
+    ['cjk', /[㐀-鿿぀-ヿ]/u],
+    ['hangul', /[가-힯ᄀ-ᇿ]/u],
+    ['thai', /[฀-๿]/u],
+    ['cyrillic', /[Ѐ-ӿ]/u],
+    ['arabic', /[؀-ۿ]/u],
+    ['hebrew', /[֐-׿]/u],
+    ['devanagari', /[ऀ-ॿ]/u],
+  ]
+
+  it.each(locales)('locale %s carries no other script family text', (locale) => {
+    const allowed = new Set(ALLOWED_SCRIPTS[locale] ?? [])
+    const table = strings[locale] as Record<string, string>
+    const offenders: string[] = []
+    for (const [family, pattern] of FAMILY_RANGES) {
+      if (allowed.has(family)) continue
+      const keys = referenceKeys.filter((key) => pattern.test(table[key] ?? ''))
+      if (keys.length > 0) offenders.push(`${family}: ${keys.join(', ')}`)
+    }
+    expect(offenders).toEqual([])
+  })
+
+  it('policeman for the script check: the family ranges themselves match', () => {
+    // a range that matches nothing would silently disable the guard above
+    const samples: ReadonlyArray<[string, string]> = [
+      ['cjk', '文'],
+      ['hangul', '한'],
+      ['thai', 'ท'],
+      ['cyrillic', 'а'],
+      ['arabic', 'ا'],
+      ['hebrew', 'א'],
+      ['devanagari', 'अ'],
+    ]
+    for (const [family, sample] of samples) {
+      const pattern = FAMILY_RANGES.find(([name]) => name === family)?.[1]
+      expect(pattern, family).toBeDefined()
+      expect(pattern!.test(sample), family).toBe(true)
+    }
+    expect(FAMILY_RANGES.some(([, pattern]) => pattern.test('plain latin'))).toBe(false)
+  })
 })

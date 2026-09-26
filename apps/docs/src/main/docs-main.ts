@@ -2285,7 +2285,24 @@ const RECENT_PATH = () => userDataPath('recent.json')
 // the home screen lists all of these; the File menu shows only the first few
 const RECENT_LIMIT = 100
 
+/**
+ * Paths whose persistence is not a local file (the storage-mode seam,
+ * Phase 7e): a remote-mode document's path is either an ephemeral scratch
+ * file or a server-side label, so a recents row would point at a file that
+ * never exists on disk. The shell installs the predicate (the document-store
+ * router's `isCloudOnlyPath`); standalone docs never does and keeps every path.
+ */
+let recentPathFilter: ((filePath: string) => boolean) | null = null
+
+/** Installs (or clears) the recents path filter — see {@link recentPathFilter}. */
+export function setRecentPathFilter(filter: ((filePath: string) => boolean) | null): void {
+  recentPathFilter = filter
+}
+
 function pushRecent(filePath: string): void {
+  // a remote-routed document's identity is its cloud id, not this path —
+  // the home cloud view is its row, the local recents list must not grow one
+  if (recentPathFilter?.(filePath)) return
   const recent = readJson<string[]>(RECENT_PATH(), [])
   // Every save lands here (autosave = every 30s): skip the write and the menu
   // rebuild when the file is already at the head of the list

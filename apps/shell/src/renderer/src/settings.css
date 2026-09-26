@@ -506,6 +506,125 @@
   line-height: 1.5;
 }
 
+/* ── Document storage mode (Phase 7e) ── */
+
+.set-storage {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 14px;
+}
+
+/* one mode per row: a radio, its label, and the honest description */
+.set-mode-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.set-mode-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text-primary);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.set-mode-option:hover {
+  background: var(--surface-subtle);
+}
+
+.set-mode-option.active {
+  border-color: var(--accent, var(--text-primary));
+}
+
+.set-mode-option:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.set-mode-radio {
+  flex-shrink: 0;
+  width: 14px;
+  height: 14px;
+  margin-top: 2px;
+  border: 1.5px solid var(--border-subtle);
+  border-radius: 50%;
+  background: var(--surface);
+}
+
+.set-mode-option.active .set-mode-radio {
+  border-color: var(--accent, var(--text-primary));
+  box-shadow:
+    inset 0 0 0 3px var(--surface),
+    inset 0 0 0 8px var(--accent, var(--text-primary));
+}
+
+.set-mode-label {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* the opt-in migration offer / progress / results panel */
+.set-migration {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--surface-subtle);
+}
+
+.set-migration-title {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.set-migration-body {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.set-migration-failures {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.set-migration-failures li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.set-migration-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+}
+
+.set-migration-err {
+  flex-shrink: 0;
+  color: var(--danger);
+}
+
 /* ── AI model pane ── */
 
 .set-input {
