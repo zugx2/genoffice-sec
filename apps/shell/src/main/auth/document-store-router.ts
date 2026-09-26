@@ -190,6 +190,8 @@ export class DocumentStoreRouter implements DocumentStore {
   private readonly associations = new Map<string, string>()
   /** cloudId → the local file a hybrid/local open downloaded this session */
   private readonly downloadTargets = new Map<string, string>()
+  /** one write queue per document: path → the queue tail (never rejects) */
+  private readonly writeQueues = new Map<string, Promise<unknown>>()
 
   constructor(deps: DocumentStoreRouterDeps) {
     this.mode = deps.mode
@@ -358,17 +360,44 @@ export class DocumentStoreRouter implements DocumentStore {
     return bytes
   }
 
-  async write(ref: DocumentRef, bytes: Buffer): Promise<void> {
-    const doc = this.intern(ref.path)
-    const store = doc.store ?? this.activeStore()
-    const cloudIdBefore = doc.ref.cloudId
-    await store.write(doc.ref, bytes)
-    if (doc.scratch && store === this.remoteStore) {
-      // keep the scratch twin at the saved bytes: lazy media serves ranges
-      // from the file at the document's path after a save
-      void this.remoteStore.scratch.writeAt(doc.ref.path, bytes).catch(() => {})
-    }
-    this.pinAfterCloudOp(doc, store, cloudIdBefore)
+  /**
+   * Runs one document's write-class op inside that document's queue, so a
+   * document's `write` and `writeRecovery` never overlap. Why the router
+   * serializes on top of the remote adapter's own per-document PUT chain:
+   * each queued op's post-processing must observe the previous op's result
+   * in order — a recovery tick bumps the server version the next save guards
+   * with, and interleaved bookkeeping (the pin/re-point fan-out, the
+   * association persist) would read half-applied state or send the second
+   * PUT with a stale `If-Match` (409 → spurious conflict copy + tab re-key).
+   */
+  private enqueueWrite<T>(path: string, op: () => Promise<T>): Promise<T> {
+    const tail = this.writeQueues.get(path) ?? Promise.resolve()
+    const result = tail.then(op, op)
+    const settled = result.then(
+      () => undefined,
+      () => undefined,
+    )
+    this.writeQueues.set(path, settled)
+    void settled.then(() => {
+      // drop the queue once it drains (a later enqueue has replaced the entry)
+      if (this.writeQueues.get(path) === settled) this.writeQueues.delete(path)
+    })
+    return result
+  }
+
+  write(ref: DocumentRef, bytes: Buffer): Promise<void> {
+    return this.enqueueWrite(ref.path, async () => {
+      const doc = this.intern(ref.path)
+      const store = doc.store ?? this.activeStore()
+      const cloudIdBefore = doc.ref.cloudId
+      await store.write(doc.ref, bytes)
+      if (doc.scratch && store === this.remoteStore) {
+        // keep the scratch twin at the saved bytes: lazy media serves ranges
+        // from the file at the document's path after a save
+        void this.remoteStore.scratch.writeAt(doc.ref.path, bytes).catch(() => {})
+      }
+      this.pinAfterCloudOp(doc, store, cloudIdBefore)
+    })
   }
 
   async remove(ref: DocumentRef): Promise<void> {
@@ -475,19 +504,24 @@ export class DocumentStoreRouter implements DocumentStore {
 
   // ── crash-recovery copies (per-mode autosave) ──────────────────────────
 
-  async writeRecovery(ref: DocumentRef, bytes: Buffer): Promise<void> {
-    const { ref: resolved, store, doc } = this.resolve(ref)
-    if (store === this.remoteStore) {
-      // remote mode: the recovery tick IS the server autosave — PUT the bytes
-      // as a new version. A crash then reopens the newest server version, so
-      // no local buffer is kept (an offline tick fails; the renderer stays
-      // dirty and retries — there is no local copy to fall back on).
-      const cloudIdBefore = resolved.cloudId
-      await this.remoteStore.write(resolved, bytes)
-      if (doc !== undefined) this.pinAfterCloudOp(doc, this.remoteStore, cloudIdBefore)
-      return
-    }
-    await store.writeRecovery(resolved, bytes)
+  writeRecovery(ref: DocumentRef, bytes: Buffer): Promise<void> {
+    // queued behind any in-flight write of the same document (enqueueWrite):
+    // the tick's server PUT must not race a save dispatched mid-flight
+    return this.enqueueWrite(ref.path, async () => {
+      const { ref: resolved, store, doc } = this.resolve(ref)
+      if (store === this.remoteStore) {
+        // remote mode: the recovery tick IS the server autosave — PUT the
+        // bytes as a new version. A crash then reopens the newest server
+        // version, so no local buffer is kept (an offline tick fails; the
+        // renderer stays dirty and retries — there is no local copy to fall
+        // back on).
+        const cloudIdBefore = resolved.cloudId
+        await this.remoteStore.write(resolved, bytes)
+        if (doc !== undefined) this.pinAfterCloudOp(doc, this.remoteStore, cloudIdBefore)
+        return
+      }
+      await store.writeRecovery(resolved, bytes)
+    })
   }
 
   recoveryStamp(ref: DocumentRef): RecoveryStamp | null {
@@ -573,12 +607,41 @@ export class DocumentStoreRouter implements DocumentStore {
     return { ok: true, plan: { kind: 'local', path: download.path, name } }
   }
 
+  /** The cloud identity `path` is already bound to, if any. */
+  private boundCloudId(path: string): string | undefined {
+    return this.docs.get(path)?.ref.cloudId ?? this.associations.get(path)
+  }
+
+  /**
+   * A download target free of BOTH collision kinds. `uniquePathIn` is the
+   * local filesystem's collision authority only — and a remote-mode save
+   * leaves NO file at its document's path, so that phantom path can resurface
+   * here while it is still interned (and associated) for a DIFFERENT cloud
+   * document. Interning it for this download would overwrite that document's
+   * `ref.cloudId` and re-point its association, so the candidates walk the
+   * `-2`, `-3`… suffixes until one carries no foreign cloud identity.
+   */
+  private freshDownloadTarget(dir: string, name: string, cloudId: string): string {
+    const dot = name.lastIndexOf('.')
+    const stem = dot > 0 ? name.slice(0, dot) : name
+    const ext = dot > 0 ? name.slice(dot) : ''
+    let candidate = this.localStore.uniquePathIn(dir, name)
+    for (let n = 2; ; n += 1) {
+      const bound = this.boundCloudId(candidate)
+      // unbound, or already this document's own target: safe to use
+      if (bound === undefined || bound === cloudId) return candidate
+      candidate = this.localStore.uniquePathIn(dir, `${stem}-${n}${ext}`)
+    }
+  }
+
   /**
    * Downloads one cloud document to the GenOffice documents folder (used by
    * open-from-cloud and the bulk migration). Name collisions get a
-   * unique-suffixed local name; a document downloaded earlier this session
-   * reuses its target while the file still exists (a re-open must not stack
-   * up `name-2.docx`, `name-3.docx`… copies).
+   * unique-suffixed local name — on disk AND against paths already bound to
+   * another cloud document ({@link freshDownloadTarget}); a document
+   * downloaded earlier this session reuses its target while the file still
+   * exists (a re-open must not stack up `name-2.docx`, `name-3.docx`…
+   * copies).
    */
   async downloadDocument(
     cloudId: string,
@@ -586,9 +649,13 @@ export class DocumentStoreRouter implements DocumentStore {
     store: DocumentStore = this.localStore,
   ): Promise<{ ok: true; path: string } | { ok: false; error: 'unavailable' }> {
     const dir = this.documentsDir()
+    // a document downloaded earlier this session reuses its target while the
+    // file still exists (a re-open must not stack up `name-2.docx`,
+    // `name-3.docx`… copies — and a vanished file must not be overwritten,
+    // which a bare truthiness check on the promise would silently allow)
     let target = this.downloadTargets.get(cloudId)
-    if (target === undefined || !this.localStore.exists({ path: target })) {
-      target = this.localStore.uniquePathIn(dir, name)
+    if (target === undefined || !(await this.localStore.exists({ path: target }))) {
+      target = this.freshDownloadTarget(dir, name, cloudId)
     }
     try {
       if (store === this.localStore) {

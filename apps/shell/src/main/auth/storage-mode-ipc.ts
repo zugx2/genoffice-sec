@@ -16,7 +16,9 @@
  * - `cloud:open-document` — open a cloud document by id, routed per mode
  *   (remote → scratch-backed docs tab keyed by cloudId; hybrid/local →
  *   download into the documents folder + a path-keyed tab);
- * - `cloud:migrate-documents` — run (or retry a subset of) the bulk move;
+ * - `cloud:migrate-documents` — run (or retry a subset of) the bulk move,
+ *   refused with a typed error when the direction cannot run in the mode as
+ *   it is now (`no-such-migration`);
  * - `cloud:migration-progress` — push, one per finished step, to the
  *   requesting webContents only.
  *
@@ -133,6 +135,24 @@ const migrateDocumentsResultSchema = z.union([
     })
     .strict(),
 ])
+
+/**
+ * Whether `direction` can run while `mode` is the CURRENT mode — the same
+ * matrix {@link migrationOfferFor} encodes: an offer is returned by a mode
+ * switch and shown after it completed, so its direction is always legal for
+ * the mode the switch landed on. `local → remote/hybrid` offers upload,
+ * `remote → local/hybrid` offers download, and `hybrid` is reachable from
+ * either origin, so both of its directions exist. A direction outside that
+ * set cannot move anything sane — an upload while still `local` would
+ * rewrite documents onto themselves through the local adapter, a download
+ * while still `remote` would intern download targets the server bytes never
+ * land at — so the handler refuses it with the typed `no-such-migration`
+ * instead of running it.
+ */
+function directionRunnableIn(mode: StorageMode, direction: 'upload' | 'download'): boolean {
+  if (mode === 'hybrid') return true
+  return mode === 'local' ? direction === 'download' : direction === 'upload'
+}
 
 export interface StorageModeIpcDeps {
   /** app-settings.json path (the storageMode key lives there) */
@@ -303,6 +323,11 @@ export function registerStorageModeIpc(deps: StorageModeIpcDeps = {}): void {
     STORAGE_MODE_CHANNELS.migrateDocuments,
     async (event: IpcMainInvokeEvent, input: unknown) => {
       const { direction, retry } = migrateDocumentsArgs.parse(input)
+      // the edge check: the caller's direction must still match the mode as
+      // it is NOW (a dialog can outlive the switch it was offered by)
+      if (!directionRunnableIn(modeStore!.get(), direction)) {
+        return migrateDocumentsResultSchema.parse({ ok: false, error: 'no-such-migration' })
+      }
       const sender = event.sender
       // the freshest list the registry can serve: downloads enumerate it
       await registry()

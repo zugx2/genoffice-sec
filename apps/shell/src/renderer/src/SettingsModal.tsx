@@ -1055,10 +1055,11 @@ interface MigrationState {
 
 /**
  * Storage-mode section of the Account pane (Phase 7e): where document files
- * live. The selector is the ONLY way the setting changes (main-side guard:
- * picking remote/hybrid while signed out answers a typed error and leaves the
- * setting alone); a switch that has data to move offers the bulk migration —
- * opt-in, progress-reported, failures listed and retryable.
+ * live. The selector is the ONLY way the setting changes (a signed-out picker
+ * is refused before invoking — no pointless round-trip — and the main-side
+ * guard re-checks, answering the same typed error and leaving the setting
+ * alone); a switch that has data to move offers the bulk migration — opt-in,
+ * progress-reported, failures listed and retryable.
  */
 function StorageModeSection({ t }: { t: TFunc }) {
   const api = window.aiOfficeStorage
@@ -1091,6 +1092,14 @@ function StorageModeSection({ t }: { t: TFunc }) {
   const pick = (mode: StorageMode): void => {
     if (!api || state === null || mode === state.mode) return
     if (migration !== null && migration.phase !== 'done') return // never flip mid-move
+    // the local pre-guard: a signed-out picker cannot succeed, so the invoke
+    // is not even attempted (the main-side guard stays authoritative for a
+    // session that died since this push — it re-checks and answers the same
+    // typed error)
+    if (mode !== 'local' && !state.signedIn) {
+      setGuard(true)
+      return
+    }
     setGuard(false)
     void api
       .setStorageMode(mode)
@@ -1120,15 +1129,20 @@ function StorageModeSection({ t }: { t: TFunc }) {
   const runMigration = (retry?: string[]): void => {
     if (!api || migration === null) return
     const sources = retry ?? undefined
-    setMigration({ ...migration, phase: 'running', done: 0, moved: 0, failures: [] })
+    // totals reset with the run: they come back with the first progress push
+    setMigration({ ...migration, phase: 'running', done: 0, total: 0, moved: 0, failures: [] })
     void api
       .migrateDocuments(migration.direction, sources)
       .then((result) => {
-        setMigration((prev) =>
-          prev !== null && result.ok
+        setMigration((prev) => {
+          if (prev === null) return prev
+          // a typed refusal (the mode moved under an open dialog, so the
+          // main side answered `no-such-migration`) leaves the machine the
+          // same way a thrown call does — never stuck on `running`
+          return result.ok
             ? { ...prev, phase: 'done', moved: result.moved, failures: result.failures }
-            : prev,
-        )
+            : { ...prev, phase: 'done' }
+        })
       })
       .catch(() => {
         setMigration((prev) => (prev !== null ? { ...prev, phase: 'done' } : prev))

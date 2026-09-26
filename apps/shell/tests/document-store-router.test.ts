@@ -42,6 +42,8 @@ class FakeBackend {
   readonly requests: Array<{ method: string; path: string; ifMatch?: string }> = []
   /** transport fails outright while set (dead session / network down) */
   dead = false
+  /** while set, every PUT waits for this gate before answering (race tests) */
+  putGate: Promise<void> | undefined = undefined
   private readonly docs = new Map<string, FakeDoc>()
   private seq = 0
 
@@ -55,6 +57,7 @@ class FakeBackend {
       path,
       ifMatch: headers?.['if-match'],
     })
+    if (method === 'PUT' && this.putGate !== undefined) await this.putGate
     if (method === 'GET' && path === '/documents') {
       return Response.json({
         documents: [...this.docs.values()].map((doc) => ({
@@ -559,6 +562,86 @@ describe('open-from-cloud, both modes', () => {
       ok: false,
       error: 'unavailable',
     })
+  })
+})
+
+describe('download targets: reuse, collisions, phantom paths', () => {
+  it('a download never re-binds a phantom path interned for a different cloud document', async () => {
+    signedIn = true
+    mode = 'remote'
+    const phantom = join(documentsDir, 'phantom.docx')
+    await router.write({ path: phantom }, Buffer.from('remote original')) // server doc, NO file on disk
+    const oldId = associationOf(phantom)
+    expect(existsSync(phantom)).toBe(false)
+
+    // the user switches to hybrid; a migration/open downloads another cloud
+    // document that carries the same file name — the filesystem says
+    // `phantom.docx` is free, but it is still interned for the old document
+    mode = 'hybrid'
+    const otherId = backend.seed('phantom.docx', 'docx', Buffer.from('downloaded'))
+    entries = [entryOf(otherId, { name: 'phantom.docx' })]
+    const outcome = await router.downloadDocument(otherId, 'phantom.docx', router.hybridStore)
+    const fresh = outcome.ok ? outcome.path : ''
+    expect(fresh).toBe(join(documentsDir, 'phantom-2.docx'))
+    await settle()
+    // the old binding survived, the new document got its own
+    expect(associationOf(phantom)).toBe(oldId)
+    expect(associationOf(fresh)).toBe(otherId)
+    expect(readFileSync(fresh, 'utf8')).toBe('downloaded')
+    // and the old document still saves to its own server copy
+    await router.write({ path: phantom }, Buffer.from('remote v2'))
+    const lastPut = backend.requests.filter((r) => r.method === 'PUT').at(-1)
+    expect(lastPut?.path).toBe(`/documents/${oldId}`)
+  })
+
+  it('a vanished download target is re-derived on re-open (the reuse check really asks the disk)', async () => {
+    mode = 'local'
+    signedIn = true
+    const cloudId = backend.seed('shared.docx', 'docx', Buffer.from('cloud bytes'))
+    entries = [entryOf(cloudId, { name: 'shared.docx' })]
+    const first = await router.openCloudDocument(cloudId)
+    const p1 = first.ok && first.plan.kind === 'local' ? first.plan.path : ''
+    expect(p1).toBe(join(documentsDir, 'shared.docx'))
+    rmSync(p1) // the user deleted the working copy
+
+    // the remembered target no longer exists, so it is not reused blindly:
+    // the name is re-derived from disk (free again → the same path) and the
+    // copy is restored from the server
+    const second = await router.openCloudDocument(cloudId)
+    const p2 = second.ok && second.plan.kind === 'local' ? second.plan.path : ''
+    expect(p2).toBe(p1)
+    expect(readFileSync(p2, 'utf8')).toBe('cloud bytes')
+  })
+
+  it('a save dispatched during a recovery tick queues behind it (no stale-If-Match conflict copy)', async () => {
+    signedIn = true
+    mode = 'remote'
+    const path = join(documentsDir, 'race.docx')
+    await router.write({ path }, Buffer.from('v1'))
+    const cloudId = associationOf(path)
+
+    let release!: () => void
+    backend.putGate = new Promise<void>((resolve) => {
+      release = resolve
+    })
+    const recovery = router.writeRecovery({ path }, Buffer.from('autosave'))
+    await settle() // the recovery PUT is in flight
+    const save = router.write({ path }, Buffer.from('save'))
+    await settle()
+    // the save has not reached the transport while the tick is in flight
+    expect(backend.requests.filter((r) => r.method === 'PUT')).toHaveLength(1)
+
+    release()
+    await Promise.all([recovery, save])
+    backend.putGate = undefined
+    const puts = backend.requests.filter((r) => r.method === 'PUT')
+    expect(puts).toHaveLength(2)
+    // the save inherited the tick's version: the second PUT carried the fresh
+    // If-Match, so no 409 — and no conflict copy + re-key followed the tick
+    expect(puts[1]!.ifMatch).toBe('2')
+    expect(puts.every((r) => r.path === `/documents/${cloudId}`)).toBe(true)
+    expect(backend.requests.some((r) => r.path.includes('conflict=copy'))).toBe(false)
+    expect(backend.bytesOf(cloudId).toString()).toBe('save')
   })
 })
 
