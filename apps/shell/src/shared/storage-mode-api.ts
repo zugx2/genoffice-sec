@@ -62,7 +62,7 @@ export type SetStorageModeResult =
 export type OpenCloudDocumentError =
   /** no authenticated session: cloud documents are read-only-until-signin */
   | 'sign-in-required'
-  /** not a docs document (xlsx/pptx/pdf/md/html editors roll out with T17) */
+  /** not a kind any editor opens (a registry entry a newer server could add) */
   | 'unsupported-kind'
   /** the id is not in the registry's list */
   | 'not-found'

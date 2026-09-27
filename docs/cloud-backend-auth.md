@@ -196,7 +196,7 @@ renderer surface below are flow-agnostic.
   decision point 3) with an Apache-2.0 license unless the enterprise
   decision moves it under `ee/`.
 - Validates access tokens locally against the realm JWKS
-  (`{issuer}/protocol/openid-connection/certs`): signature via cached JWKS
+  (`{issuer}/protocol/openid-connect/certs`): signature via cached JWKS
   (rotate on unknown `kid`), `iss`, `aud`, `exp` with small clock skew.
   No per-request network call; no token introspection.
 - `sub` claim is the user identity everywhere (ownership, namespaces,
@@ -286,7 +286,8 @@ no Electron import):
 - `registerAuthIpc()` in the registration list (~`:4741`): channels
   `auth:login` (starts the device flow), `auth:cancel-login`,
   `auth:logout`, `auth:get-session`, push events `auth:login-event`
-  (progress: user code, verification URI, waiting/success/failure — mirror
+  (progress: user code, waiting/success/failure — main opens the
+  verification page itself; the URI never crosses the bridge — mirror
   the `home:account-login-event` shape) and `auth:session-changed`.
 - Session manager: restore session at startup, single-flight login
   (concurrent `auth:login` calls reuse one attempt), proactive refresh

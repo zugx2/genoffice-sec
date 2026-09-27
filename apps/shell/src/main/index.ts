@@ -2665,10 +2665,14 @@ function createShellWindow(): void {
   // When ⌘O opens a file inside a tab, sync the tab title/path (used for de-dup by path) and record it as recent.
   // The first save / save-as fires this too, so applyPendingDir also runs here.
   setSheetsWorkbookOpenedHook((wc, path) => {
+    // remote-mode open: the tab already holds its cloudId identity and the
+    // server-side name (see setDocsFileOpenedHook below)
+    if (getDocumentStoreRouter()?.isScratchPath(path)) return
     manager.setTabFileFor(wc.id, path)
     recordRecentFile(path)
   })
   setSlidesOpenedHook((wc, path) => {
+    if (getDocumentStoreRouter()?.isScratchPath(path)) return
     manager.setTabFileFor(wc.id, path)
     recordRecentFile(path)
     applyPendingDir(wc.id, path)
