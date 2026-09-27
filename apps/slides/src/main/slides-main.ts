@@ -880,6 +880,10 @@ async function openAndBuild(
   for (const [id, existing] of sessions) {
     if (id === wc.id || !existing.path || resolve(existing.path) !== wanted) continue
     sessions.set(wc.id, existing)
+    // the attached view is a store owner too: its save grants ride the same
+    // session, and the last owner leaving must not drop the remote-mode
+    // scratch twin out from under a still-attached window
+    getSlidesDocumentStore().authorizeWrite(wc.id, { path })
     scheduleHistoryNotify(existing)
     await pushRecent(path)
     slidesOpenedHook?.(wc, path)

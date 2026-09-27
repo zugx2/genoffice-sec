@@ -3030,7 +3030,23 @@ export function registerSheetsIpc(): void {
       // through the document's adapter instead of leaving the file behind the
       // router's back (in `local` mode this rewrites the same bytes through
       // the local adapter's atomic write)
-      await getSheetsDocumentStore().write({ path: targetPath }, await readFile(targetPath))
+      try {
+        await getSheetsDocumentStore().write({ path: targetPath }, await readFile(targetPath))
+      } catch (error) {
+        // The sidecar bytes already landed, so the session's guard digests
+        // are stale against our own write. Refresh them (the csvInPlace
+        // pattern below) before rethrowing, or the next plain Save is
+        // stranded behind errDiskChanged against bytes this session wrote.
+        const savedSha = await sha256File(targetPath).catch(() => undefined)
+        if (savedSha !== undefined && entry.sessions.has(request.sessionId)) {
+          entry.sessions.set(request.sessionId, {
+            ...session,
+            ...(targetPath === session.path ? { sha256: savedSha } : {}),
+            ...(targetPath === session.restoreTarget ? { restoreTargetSha: savedSha } : {}),
+          })
+        }
+        throw error
+      }
     }
 
     if (csvInPlace && session.csvSourcePath !== undefined && request.csvContent !== undefined) {
