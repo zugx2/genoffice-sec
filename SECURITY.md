@@ -46,6 +46,43 @@ All application windows run with the full Electron renderer lockdown:
   registry's on-disk cache (`cloud-documents.json`) is bound to a salted
   hash of the verified `sub`, so one account's cached list is unreadable —
   and dropped — under any other account.
+- Document storage modes (per-user `storageMode` in `app-settings.json`):
+  `local` (default, today's all-local behavior), `remote` (the server holds
+  the only persistent copy), and `hybrid` (local working copy mirrored to the
+  server on every save). All document bytes still move through the editor
+  main processes — never the renderer — via the document-store adapters
+  (`packages/document-store`) behind the shell's router
+  (`apps/shell/src/main/auth/document-store-router.ts`), which rides the same
+  authenticated client and SSRF-gated base URL as everything above. The
+  backend surface is per-user document endpoints (`GET/POST /documents`,
+  `GET/PUT/DELETE /documents/:id`, `GET /documents/:id/versions`), scoped by
+  the verified `sub` server-side; updates are version-guarded with
+  `If-Match`, and a conflict stores a conflict copy instead of overwriting.
+  Per-editor IPC save/open channels keep their existing grants: a save may
+  only write a path the view opened or explicitly chose, MCP silent saves
+  need a store-recorded write grant (`authorizeWrite`/`canWrite`), and a
+  remote-routed document's save uploads through the store rather than
+  touching disk behind the router's back. The only new channels —
+  `cloud:get-storage-mode`, `cloud:set-storage-mode`,
+  `cloud:open-document`, `cloud:migrate-documents`, and the
+  `cloud:storage-mode-changed` / `cloud:migration-progress` pushes — are
+  zod-validated at the main-process edge, and `cloud:set-storage-mode`
+  refuses `remote`/`hybrid` without a live session.
+- Ephemeral scratch (remote mode): a downloaded remote document lives in a
+  userData temp space (`cloud-scratch`) only while a tab holds it — engines
+  that need real files read there. It is deleted when its last owning tab
+  closes, the whole space is wiped on clean exit (`will-quit`), and files a
+  crashed run left behind are swept at startup, so nothing in it is a
+  persistent copy. Crash-recovery autosaves of remote-routed documents are
+  uploaded to the server instead of being buffered on disk. The path →
+  cloudId association index (`cloud-document-index.json`) stores only ids,
+  never tokens or versions.
+- Mode-switch migration (`cloud:migrate-documents`) bulk-uploads local
+  documents to the user's own account or bulk-downloads them back, one
+  sequential step per document with progress pushed only to the requesting
+  webContents; the direction is validated against the current mode before
+  anything moves, and failures are reported per document (never silently
+  skipped).
 
 ## Threat Model: AI-Generated Layout Scripts (slides)
 

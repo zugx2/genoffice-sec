@@ -16,7 +16,11 @@ not rediscovered at rollout.
 
 Routing between them is the shell's `documentStoreRouter`
 (`apps/shell/src/main/auth/document-store-router.ts`, Phase 7e), installed
-through `setDocumentStore` in `apps/docs/src/main/docs-main.ts` — see below.
+through `setDocumentStore` in `apps/docs/src/main/docs-main.ts` — and, since
+Phase 7f, through the per-editor twins (`setSheetsDocumentStore`,
+`setSlidesDocumentStore`, `setPdfDocumentStore`, `setMarkdownDocumentStore`,
+`setHtmlDocumentStore`), so all six editors route their open/save/recovery
+handlers through the router. See "Per-editor rollout (Phase 7f)" below.
 
 ## Routing (Phase 7e, the storageMode rollout)
 
@@ -114,3 +118,68 @@ before/after every cloud op and calls `CloudDocumentsRegistry.rekeyDocument`
 (so the cache entry and queued stars follow) plus the tab manager's
 `rekeyTabCloudId` (open tabs follow); the registry's own
 `onDocumentRekeyed` subscribers reach the tabs through the same seam.
+
+## Per-editor rollout (Phase 7f)
+
+The docs pilot's rules now hold for every editor: startup injection of the
+router (`set<Editor>DocumentStore(getDocumentStoreRouter())` in the shell,
+a plain `LocalDocumentStore` in standalone mode), re-resolve per operation,
+open tabs keep their pinned adapter, and open-from-cloud rows of every kind
+open in their editor (the router's `openCloudDocument` dispatches on the
+registry `kind`; the shell's `openCloudTabForKind` maps kind → tab opener,
+with the same cloudId-keyed tabs in `remote` and download + path-keyed tabs
+in `hybrid`/`local` as docs got in 7e). Guard parity is structural: a save
+can only reach the store's write path, and the MCP silent-save grants
+(docs `authorizeMcpDocWrite`, sheets `authorizeMcpSheetWrite`, slides
+`saveSessionDeckTo`, markdown/html `saveToPath`) record owners through
+`authorizeWrite`, so a remote-routed document's write PUTs through its
+pinned adapter and never touches disk behind the router's back.
+
+What each editor routes, and where its file-backed machinery remains:
+
+| Editor   | Routed through the store                                                                                                                             | Still file-backed (by design)                                                                                                                                            |
+| -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| docs     | open/save/save-as/save-new/save-to/recovery (pilot, 7e)                                                                                              | lazy media reads the scratch twin                                                                                                                                        |
+| sheets   | session snapshot at open, save (bytes pushed after the sidecar lands them), recovery copies, csv import source, MCP target grants                    | the sidecar itself (it opens and writes real files; the store materializes its inputs and ships its outputs); in-place CSV saves stay local (`.csv` is not a cloud kind) |
+| slides   | open reads, save/save-as/save-to, AI drafts, crash-recovery copies                                                                                   | nothing byte-moving                                                                                                                                                      |
+| pdf      | routed open read, save, in-place page ops (insert/replace/resize/crop), all document reads (previews, page images, form fills, text-edit validation) | exports to NEW files (extract/split/merge outputs, image export) remain plain local artifacts, exactly like the print/export paths of every editor                       |
+| markdown | open read, save/save-as                                                                                                                              | asset files beside the document (scratch-relative for remote docs)                                                                                                       |
+| html     | open read, save/save-as                                                                                                                              | same asset story as markdown                                                                                                                                             |
+
+Notes and residuals, all rooted in the same honest caveats as before:
+
+- **Sheets/slides recovery buffers moved into the store.** The copies now
+  live in the store's per-mode autosave layout instead of
+  `sheets-autosave/` / `slides-autosave/` (those directories survive only as
+  the sidecar's staging path in sheets). Semantics are unchanged for
+  local/hybrid (mtime-newer copy → Restore/Discard offer; save or explicit
+  discard clears it); a remote-routed document has no local copy at all —
+  its recovery tick IS the server autosave, and a reopen downloads the
+  newest version, so there is nothing to offer as "recovered". Copies
+  written by older builds in the old directories are simply orphaned.
+- **Sheets' external-change guard is sha-based on the local file.** For a
+  remote-routed document the session's path is an ephemeral scratch file the
+  sidecar itself wrote, so the sha guard compares against that file (a
+  missing file never blocks a save); cross-device conflicts are handled by
+  the server's `If-Match` version checks on the routed write, not by the
+  local sha.
+- **A sheets/slides save lands its bytes on disk first** (the sidecar
+  writes `targetPath`, `savePptx` bytes are written by the routed write) and
+  is then pushed through the store — so in `local` mode a save writes the
+  same bytes twice (sidecar output, then the local adapter's atomic rewrite
+  of identical bytes). Deliberate: it keeps every byte movement on one
+  routing path instead of special-casing modes inside the editors.
+- **PDF feature reads go through the store**, so previews and page images of
+  a remote-routed document read the same bytes the editor opened (the
+  router's `read` materializes the scratch twin). After a save the twin is
+  refreshed fire-and-forget (the 7e note above), so a feature read in the
+  moments between can still see the pre-save bytes until the next routed
+  read.
+- **markdown/html image assets are ordinary files beside the document.** For
+  a remote scratch document they land in the scratch space and share its
+  lifecycle; the asset protocol serves them from the document's directory,
+  which is the scratch directory there.
+- **Slides keeps its own `File > Open Recent` menu** (`slides-recent.json`)
+  beside the home screen's recents; it installs the same
+  `isCloudOnlyPath` filter (`setSlidesRecentPathFilter`) so a remote-routed
+  deck's ephemeral path never grows a row there either.

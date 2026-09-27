@@ -44,7 +44,32 @@ function makeFakeView(): FakeView {
   }
 }
 
-vi.mock('electron', () => ({ BrowserWindow: class {} }))
+vi.mock('electron', () => ({
+  BrowserWindow: class {},
+  protocol: { handle: vi.fn(), registerSchemesAsPrivileged: vi.fn() },
+}))
+
+const createMarkdownView = vi.fn(() => makeFakeView())
+const markdownIsDirty = vi.fn(() => false)
+const requestMarkdownClose = vi.fn(() => Promise.resolve(true))
+
+vi.mock('../../markdown/src/main/markdown-main', () => ({
+  createMarkdownView: (...args: unknown[]) => createMarkdownView(...(args as [])),
+  markdownIsDirty: (...args: unknown[]) => markdownIsDirty(...(args as [])),
+  requestMarkdownClose: (...args: unknown[]) => requestMarkdownClose(...(args as [])),
+}))
+
+const createHtmlView = vi.fn(() => makeFakeView())
+const createHtmlPresentView = vi.fn(() => makeFakeView())
+const htmlIsDirty = vi.fn(() => false)
+const requestHtmlClose = vi.fn(() => Promise.resolve(true))
+
+vi.mock('../../html/src/main/html-main', () => ({
+  createHtmlPresentView: (...args: unknown[]) => createHtmlPresentView(...(args as [])),
+  createHtmlView: (...args: unknown[]) => createHtmlView(...(args as [])),
+  htmlIsDirty: (...args: unknown[]) => htmlIsDirty(...(args as [])),
+  requestHtmlClose: (...args: unknown[]) => requestHtmlClose(...(args as [])),
+}))
 
 const createDocsView = vi.fn(() => makeFakeView())
 const docsQueryDirty = vi.fn(() => Promise.resolve(false))
@@ -195,6 +220,52 @@ describe('opening tabs', () => {
       'budget.xlsx',
       'deck.pptx',
       'scan.pdf',
+    ])
+  })
+
+  it('opens cloud tabs of every kind keyed by cloudId with the server name (Phase 7f)', () => {
+    const docs = manager.openDocsTab('/scratch/a.docx', {
+      cloudId: 'doc-1',
+      title: 'Notes.docx',
+    })
+    const sheets = manager.openSheetsTab('/scratch/b.xlsx', {
+      cloudId: 'sheet-1',
+      title: 'Numbers.xlsx',
+    })
+    const slides = manager.openSlidesTab('/scratch/c.pptx', {
+      cloudId: 'slides-1',
+      title: 'Deck.pptx',
+    })
+    const pdf = manager.openPdfTab('/scratch/d.pdf', {
+      cloudId: 'pdf-1',
+      title: 'Scan.pdf',
+    })
+    const markdown = manager.openMarkdownTab('/scratch/e.md', {
+      cloudId: 'md-1',
+      title: 'Readme.md',
+    })
+    const html = manager.openHtmlTab('/scratch/f.html', {
+      cloudId: 'html-1',
+      title: 'Page.html',
+    })
+
+    // a re-open of the same cloud document dedupes onto the existing tab
+    expect(manager.findTabByCloudId('doc-1')?.id).toBe(docs)
+    expect(manager.findTabByCloudId('sheet-1')?.id).toBe(sheets)
+    expect(manager.findTabByCloudId('slides-1')?.id).toBe(slides)
+    expect(manager.findTabByCloudId('pdf-1')?.id).toBe(pdf)
+    expect(manager.findTabByCloudId('md-1')?.id).toBe(markdown)
+    expect(manager.findTabByCloudId('html-1')?.id).toBe(html)
+
+    // the tab strip shows the server name, never the scratch basename
+    expect(manager.list().map((t) => t.title)).toEqual([
+      'GenOffice',
+      'Notes.docx',
+      'Numbers.xlsx',
+      'Deck.pptx',
+      'Scan.pdf',
+      'Readme.md',
+      'Page.html',
     ])
   })
 

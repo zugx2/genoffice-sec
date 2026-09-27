@@ -295,7 +295,10 @@ export class TabManager {
     return id
   }
 
-  openSheetsTab(openPath?: string, options?: { newBlank?: boolean }): string {
+  openSheetsTab(
+    openPath?: string,
+    options?: { newBlank?: boolean; cloudId?: string; title?: string },
+  ): string {
     if (options?.newBlank) setSheetsNewBlank()
     const spare = this.takeSpareSheetsView()
     const view = spare ?? createSheetsView({ includeAiHandlers: false })
@@ -317,14 +320,16 @@ export class TabManager {
       id,
       kind: 'sheets',
       view,
-      title: openPath ? basename(openPath) : this.untitled('sheets', 'AI Sheets'),
+      title:
+        options?.title ?? (openPath ? basename(openPath) : this.untitled('sheets', 'AI Sheets')),
       filePath: openPath,
+      cloudId: options?.cloudId,
     })
     this.activateTab(id)
     return id
   }
 
-  openSlidesTab(openPath?: string): string {
+  openSlidesTab(openPath?: string, options?: { cloudId?: string; title?: string }): string {
     const view = createSlidesView(openPath)
     const id = `t${this.nextId++}`
     this.shellWindow.contentView.addChildView(view)
@@ -334,20 +339,29 @@ export class TabManager {
       id,
       kind: 'slides',
       view,
-      title: openPath ? basename(openPath) : this.untitled('slides', 'AI Slides'),
+      title:
+        options?.title ?? (openPath ? basename(openPath) : this.untitled('slides', 'AI Slides')),
       filePath: openPath,
+      cloudId: options?.cloudId,
     })
     this.activateTab(id)
     return id
   }
 
-  openPdfTab(openPath: string): string {
+  openPdfTab(openPath: string, options?: { cloudId?: string; title?: string }): string {
     const view = createPdfView(openPath)
     const id = `t${this.nextId++}`
     this.shellWindow.contentView.addChildView(view)
     view.setVisible(false)
     this.trackHtmlFullScreen(id, view)
-    this.tabs.push({ id, kind: 'pdf', view, title: basename(openPath), filePath: openPath })
+    this.tabs.push({
+      id,
+      kind: 'pdf',
+      view,
+      title: options?.title ?? basename(openPath),
+      filePath: openPath,
+      cloudId: options?.cloudId,
+    })
     this.activateTab(id)
     return id
   }
@@ -361,7 +375,7 @@ export class TabManager {
     wc.reload()
   }
 
-  openMarkdownTab(openPath?: string): string {
+  openMarkdownTab(openPath?: string, options?: { cloudId?: string; title?: string }): string {
     const view = createMarkdownView(openPath)
     const id = `t${this.nextId++}`
     this.shellWindow.contentView.addChildView(view)
@@ -371,14 +385,17 @@ export class TabManager {
       id,
       kind: 'markdown',
       view,
-      title: openPath ? basename(openPath) : this.untitled('markdown', 'AI Markdown'),
+      title:
+        options?.title ??
+        (openPath ? basename(openPath) : this.untitled('markdown', 'AI Markdown')),
       filePath: openPath,
+      cloudId: options?.cloudId,
     })
     this.activateTab(id)
     return id
   }
 
-  openHtmlTab(openPath?: string): string {
+  openHtmlTab(openPath?: string, options?: { cloudId?: string; title?: string }): string {
     const view = createHtmlView(openPath)
     const id = `t${this.nextId++}`
     this.shellWindow.contentView.addChildView(view)
@@ -388,8 +405,9 @@ export class TabManager {
       id,
       kind: 'html',
       view,
-      title: openPath ? basename(openPath) : this.untitled('html', 'AI HTML'),
+      title: options?.title ?? (openPath ? basename(openPath) : this.untitled('html', 'AI HTML')),
       filePath: openPath,
+      cloudId: options?.cloudId,
     })
     this.activateTab(id)
     return id

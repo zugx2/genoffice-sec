@@ -30,7 +30,8 @@ import {
 } from '@genoffice/electron-utils'
 import { createI18n, getUiLang } from '@genoffice/i18n'
 import { generateImageTool } from '@genoffice/ai-search'
-import { atomicWriteFile } from './atomic-write'
+import { LocalDocumentStore } from '@genoffice/document-store'
+import type { DocumentStore } from '@genoffice/document-store'
 import {
   copyImageIntoOwnedAssets,
   discardPendingOwnedAssets,
@@ -427,6 +428,9 @@ export function markdownFileRenamed(contents: WebContents, oldPath: string, newP
   if (openPathByWc.get(wcId) === oldPath) openPathByWc.set(wcId, newPath)
   const allowed = allowedByWc.get(wcId)
   if (allowed?.has(oldPath)) allowed.add(newPath)
+  // keep the store's grant and recorded state keyed at the new path (the docs
+  // pilot's renameOwnerPath seam)
+  getMarkdownDocumentStore().renameOwnerPath(wcId, oldPath, newPath)
   void renameOwnedAssetDocument(oldPath, newPath).catch((error) => {
     console.warn('[markdown] asset manifest rename sync failed:', error)
   })
@@ -582,6 +586,10 @@ export function markdownSaveToPath(contents: WebContents, filePath: string): Pro
   const allowed = allowedByWc.get(wcId) ?? new Set<string>()
   allowed.add(filePath)
   allowedByWc.set(wcId, allowed)
+  // MCP save_session granted the path (the docs pilot's authorizeMcpDocWrite
+  // shape): the store records the owner, so the save routes through the
+  // document's pinned adapter and never touches disk behind the router's back
+  getMarkdownDocumentStore().authorizeWrite(wcId, { path: filePath })
   return new Promise<void>((resolve, reject) => {
     const restore = (): void => {
       if (previousPath === undefined) savePathByWc.delete(wcId)
@@ -606,8 +614,30 @@ export function markdownSaveToPath(contents: WebContents, filePath: string): Pro
   })
 }
 
-async function writeTextAtomic(path: string, text: string): Promise<void> {
-  await atomicWriteFile(path, Buffer.from(text, 'utf8'))
+// ── Document store (docs/cloud-backend-auth.md "Document storage modes") ──
+// Every markdown document byte movement routes through this store: open reads
+// and saves in the shell go through the storage-mode router (local adapter in
+// `local` mode — today's behavior; the remote adapter PUTs saves to the
+// server; hybrid mirrors them), standalone markdown keeps a plain local one.
+// The store is installed before documents open (the docs pilot's shape):
+// grants and pinning live inside it, so swapping it under open tabs is not
+// supported and never needed — the router re-resolves per operation.
+
+let documentStore: DocumentStore | null = null
+
+function getMarkdownDocumentStore(): DocumentStore {
+  if (!documentStore) documentStore = new LocalDocumentStore(app.getPath('userData'))
+  return documentStore
+}
+
+/**
+ * Install/replace the DocumentStore the markdown open/save handlers route
+ * through (the T14 `setDocumentStore` seam, per editor). Must happen before
+ * the first document opens: write grants are remembered per owner inside the
+ * store.
+ */
+export function setMarkdownDocumentStore(store: DocumentStore): void {
+  documentStore = store
 }
 
 async function resolveSaveTarget(
@@ -723,7 +753,15 @@ function registerMarkdownIpc(): void {
     if (typeof path !== 'string' || !allowedByWc.get(e.sender.id)?.has(path)) {
       throw new Error('markdown: path not granted to this view')
     }
-    return await readFile(path, 'utf8')
+    const store = getMarkdownDocumentStore()
+    // routed through the store: in a cloud mode this downloads a remote
+    // document (or reads the server copy of an associated path) instead of
+    // touching the local file behind the router's back
+    const bytes = await store.read({ path })
+    // the open grant: this view may now save the document (and a remote-mode
+    // scratch file is cleaned up when the last owner goes away)
+    store.authorizeWrite(e.sender.id, { path })
+    return bytes.toString('utf8')
   })
 
   ipcMain.handle(
@@ -772,7 +810,10 @@ function registerMarkdownIpc(): void {
         const textToWrite = prepared?.text ?? request.text
         const savedImageSources = prepared?.imageSources ?? imageSources
         try {
-          await writeTextAtomic(target, textToWrite)
+          // routed through the store (the atomic-write discipline lives in the
+          // adapters): a cloud-mode save uploads/mirrors instead of only
+          // touching the file behind the router's back
+          await getMarkdownDocumentStore().write({ path: target }, Buffer.from(textToWrite, 'utf8'))
         } catch (error) {
           if (prepared) await rollbackPreparedSaveAsAssets(prepared).catch(() => {})
           throw error
@@ -1028,7 +1069,12 @@ function registerMarkdownIpc(): void {
 
 function grantAndTrack(wc: WebContents, openPath?: string | null): void {
   const wcId = wc.id
-  if (openPath && existsSync(openPath)) {
+  if (openPath) {
+    // tracked without an existsSync gate: a cloud-routed document's path is
+    // backed by the store (a remote-mode scratch file is created by the
+    // routed read), not necessarily by the filesystem yet. Every caller that
+    // passes a path has already verified a local file OR comes from a cloud
+    // open plan; a genuinely missing path fails the routed read.
     openPathByWc.set(wcId, openPath)
     savePathByWc.set(wcId, openPath)
     allowedByWc.set(wcId, new Set([openPath]))
@@ -1043,6 +1089,9 @@ function grantAndTrack(wc: WebContents, openPath?: string | null): void {
     allowedByWc.delete(wcId)
     savePathByWc.delete(wcId)
     dirtyByWc.delete(wcId)
+    // drop the store's per-owner grants (and the remote scratch file when
+    // this was its last owner)
+    getMarkdownDocumentStore().forgetOwner(wcId)
     closeSaveWaiters.get(wcId)?.(false)
     closeSaveWaiters.delete(wcId)
     saveWaiters.get(wcId)?.(false)

@@ -866,6 +866,22 @@ export async function savePdfToPath(
   return skips
 }
 
+/**
+ * Apply the request to `sourceBytes` and verify the result, returning the new
+ * bytes — the byte-routing half of {@link savePdfToPath} for callers whose
+ * source and destination are a document store rather than direct file paths
+ * (the read-back verification must still abort the save before any bytes are
+ * handed to the writer).
+ */
+export async function savePdfBytes(
+  sourceBytes: Uint8Array,
+  request: SavePdfRequest,
+): Promise<AppliedSaveRequest> {
+  const applied = await applySaveRequest(sourceBytes, request)
+  await verifyContentEdits(applied.bytes, request, applied)
+  return applied
+}
+
 export interface AppliedSaveRequest {
   bytes: Uint8Array
   /** Text edits that could not be matched to the document; the rest of the request is in `bytes` */

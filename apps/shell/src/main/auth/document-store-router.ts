@@ -124,18 +124,22 @@ interface StoredIndex {
 /** The tab-opening plan `cloud:open-document` acts on (routed per mode). */
 export type OpenCloudDocumentPlan =
   | {
-      /** remote mode: open a docs tab keyed by cloudId loading from scratch */
+      /** remote mode: open an editor tab keyed by cloudId loading from scratch */
       kind: 'remote'
       cloudId: string
       /** the scratch path the tab loads (and saves back) through */
       path: string
       name: string
+      /** the registry kind that picked the editor tab */
+      documentKind: string
     }
   | {
       /** local/hybrid mode: the download landed, the tab is keyed by path */
       kind: 'local'
       path: string
       name: string
+      /** the registry kind that picked the editor tab */
+      documentKind: string
     }
 
 export type OpenCloudDocumentOutcome =
@@ -581,15 +585,16 @@ export class DocumentStoreRouter implements DocumentStore {
     if (!this.sessionActive()) return { ok: false, error: 'sign-in-required' }
     const entry = this.registry()?.document(cloudId)
     if (entry === undefined) return { ok: false, error: 'not-found' }
-    if (entry.kind !== 'docx') {
-      // the docs pilot routes docx only; the other editors' rollout is T17
+    if (!isKnownDocumentKind(entry.kind)) {
+      // not one of the six editor kinds (the backend's DOCUMENT_KINDS gate
+      // uploads; this guards a registry entry a newer server may carry)
       return { ok: false, error: 'unsupported-kind' }
     }
-    const name = docxNameOf(entry.name)
+    const name = documentNameOf(entry.name, entry.kind)
     const mode = this.mode()
     if (mode === 'remote') {
       // the scratch label carries the id (the hash suffix keeps documents
-      // with the same file name apart) and the name's extension (.docx)
+      // with the same file name apart) and the name's extension
       const path = this.remoteStore.scratch.stablePathFor(`${cloudId}/${name}`)
       this.remoteStore.scratch.track(path)
       const doc = this.intern(path)
@@ -597,14 +602,20 @@ export class DocumentStoreRouter implements DocumentStore {
       doc.store = this.remoteStore
       doc.scratch = true
       this.recordAssociation(path, cloudId)
-      return { ok: true, plan: { kind: 'remote', cloudId, path, name } }
+      return {
+        ok: true,
+        plan: { kind: 'remote', cloudId, path, name, documentKind: entry.kind },
+      }
     }
     // hybrid mirrors the download (the pin keeps later saves updating the
     // same server document); local mode just lands a copy — no association
     const store = mode === 'hybrid' ? this.hybridStore : this.localStore
     const download = await this.downloadDocument(cloudId, name, store)
     if (!download.ok) return download
-    return { ok: true, plan: { kind: 'local', path: download.path, name } }
+    return {
+      ok: true,
+      plan: { kind: 'local', path: download.path, name, documentKind: entry.kind },
+    }
   }
 
   /** The cloud identity `path` is already bound to, if any. */
@@ -728,11 +739,38 @@ export class DocumentStoreRouter implements DocumentStore {
   }
 }
 
-/** A docs tab can only load `.docx`; the server name is user data. */
-function docxNameOf(name: string): string {
+/**
+ * The backend's document kinds (services/backend DOCUMENT_KINDS, mirrored in
+ * shared/cloud-docs-api.ts) and the file extensions each maps to. `md` also
+ * accepts `.markdown` and `html` accepts `.htm`, matching the editors' own
+ * file filters; the first extension is the canonical one appended when the
+ * server name carries none of them.
+ */
+const KIND_EXTENSIONS: Record<string, readonly [primary: string, ...accepted: string[]]> = {
+  docx: ['.docx'],
+  xlsx: ['.xlsx'],
+  pptx: ['.pptx'],
+  pdf: ['.pdf'],
+  md: ['.md', '.markdown'],
+  html: ['.html', '.htm'],
+}
+
+function isKnownDocumentKind(kind: string): boolean {
+  return KIND_EXTENSIONS[kind] !== undefined
+}
+
+/**
+ * A cloud document's local file name: the server name is user data, the
+ * editor kind decides the extension (a name already carrying one of the
+ * kind's extensions is kept verbatim, a bare name gets the primary one).
+ */
+function documentNameOf(name: string, kind: string): string {
+  const extensions = KIND_EXTENSIONS[kind] ?? ['.bin']
   const trimmed = name.trim()
-  if (trimmed === '') return 'document.docx'
-  return /\.docx$/i.test(trimmed) ? trimmed : `${trimmed}.docx`
+  if (trimmed === '') return `document${extensions[0]}`
+  const lower = trimmed.toLowerCase()
+  if (extensions.some((ext) => lower.endsWith(ext))) return trimmed
+  return `${trimmed}${extensions[0]}`
 }
 
 /**

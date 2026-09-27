@@ -461,7 +461,13 @@ describe('open-from-cloud, both modes', () => {
     const outcome = await router.openCloudDocument(cloudId)
     expect(outcome).toEqual({
       ok: true,
-      plan: { kind: 'remote', cloudId, path: expect.any(String), name: 'Notes.docx' },
+      plan: {
+        kind: 'remote',
+        cloudId,
+        path: expect.any(String),
+        name: 'Notes.docx',
+        documentKind: 'docx',
+      },
     })
   })
 
@@ -540,9 +546,10 @@ describe('open-from-cloud, both modes', () => {
       error: 'sign-in-required',
     })
     signedIn = true
-    const sheet = backend.seed('sheet.xlsx', 'xlsx', Buffer.from('x'))
-    entries = [entryOf(cloudId), entryOf(sheet, { name: 'sheet.xlsx', kind: 'xlsx' })]
-    await expect(router.openCloudDocument(sheet)).resolves.toEqual({
+    // an unknown kind (a newer server's registry entry) has no editor to open
+    const unknown = backend.seed('thing.txt', 'txt', Buffer.from('x'))
+    entries = [entryOf(cloudId), entryOf(unknown, { name: 'thing.txt', kind: 'txt' })]
+    await expect(router.openCloudDocument(unknown)).resolves.toEqual({
       ok: false,
       error: 'unsupported-kind',
     })
@@ -550,6 +557,49 @@ describe('open-from-cloud, both modes', () => {
       ok: false,
       error: 'not-found',
     })
+  })
+
+  it('every editor kind plans a remote tab (Phase 7f rollout)', async () => {
+    mode = 'remote'
+    signedIn = true
+    const cases: Array<[string, string, string, RegExp]> = [
+      // [kind, server name, expected name, expected scratch extension]
+      ['xlsx', 'Numbers', 'Numbers.xlsx', /\.xlsx$/],
+      ['xlsx', 'keep.xlsx', 'keep.xlsx', /\.xlsx$/],
+      ['pptx', 'Deck', 'Deck.pptx', /\.pptx$/],
+      ['pdf', 'scan', 'scan.pdf', /\.pdf$/],
+      ['md', 'readme', 'readme.md', /\.md$/],
+      ['md', 'notes.markdown', 'notes.markdown', /\.markdown$/],
+      ['html', 'page', 'page.html', /\.html$/],
+      ['html', 'saved.htm', 'saved.htm', /\.htm$/],
+    ]
+    for (const [kind, name, expectedName, ext] of cases) {
+      const id = backend.seed(`seed-${kind}-${name}`, kind, Buffer.from(kind))
+      entries = [entryOf(id, { name, kind })]
+      const outcome = await router.openCloudDocument(id)
+      if (!outcome.ok || outcome.plan.kind !== 'remote') {
+        throw new Error(`expected a remote plan for ${kind}`)
+      }
+      expect(outcome.plan.name).toBe(expectedName)
+      expect(ext.test(outcome.plan.path)).toBe(true)
+      expect(outcome.plan.documentKind).toBe(kind)
+    }
+  })
+
+  it('every editor kind downloads to its extension in hybrid mode', async () => {
+    mode = 'hybrid'
+    signedIn = true
+    for (const kind of ['docx', 'xlsx', 'pptx', 'pdf', 'md', 'html'] as const) {
+      const cloudId = backend.seed(`hybrid-${kind}`, kind, Buffer.from(kind))
+      entries = [entryOf(cloudId, { name: `doc.${kind}`, kind })]
+      const outcome = await router.openCloudDocument(cloudId)
+      if (!outcome.ok || outcome.plan.kind !== 'local') {
+        throw new Error(`expected a local plan for ${kind}`)
+      }
+      expect(outcome.plan.documentKind).toBe(kind)
+      expect(outcome.plan.path.endsWith(`.${kind}`)).toBe(true)
+      expect(readFileSync(outcome.plan.path, 'utf8')).toBe(kind)
+    }
   })
 
   it('a dead transport answers unavailable (the download failed)', async () => {

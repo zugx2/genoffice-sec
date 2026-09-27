@@ -6,10 +6,9 @@ import {
   readFileSync,
   renameSync,
   statSync,
-  unlinkSync,
   writeFileSync,
 } from 'node:fs'
-import { copyFile, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import { basename, dirname, isAbsolute, join } from 'node:path'
 
@@ -54,6 +53,8 @@ import {
   registerRendererScheme,
   rendererUrl,
 } from '@genoffice/electron-utils'
+import { LocalDocumentStore } from '@genoffice/document-store'
+import type { DocumentStore, RecoveryStamp } from '@genoffice/document-store'
 import { createI18n, getUiLang, type Lang, normalizeLang, setUiLang } from '@genoffice/i18n'
 import { ProjectStore } from '@genoffice/project-store'
 
@@ -1623,6 +1624,9 @@ function registerSheetsSession(webContents: WebContents, client: XlsxSidecarClie
       entry.saveTransfers.dispose()
       void closeAllSessions(entry)
     }
+    // drop the store's per-owner grants (and the remote scratch file when
+    // this was its last owner)
+    getSheetsDocumentStore().forgetOwner(webContents.id)
     if (activeSheetsWebContents === webContents) activeSheetsWebContents = null
   })
 }
@@ -1660,7 +1664,11 @@ export function sheetsFileRenamed(wc: WebContents, oldPath: string, newPath: str
     entry.sessions.set(id, { ...session, path: newPath })
     matched = true
   }
-  if (matched) wc.send(IPC_CHANNELS.workbookRenamed, basename(newPath))
+  if (matched) {
+    // keep the store's grant and recovery copies keyed at the new path
+    getSheetsDocumentStore().renameOwnerPath(wc.id, oldPath, newPath)
+    wc.send(IPC_CHANNELS.workbookRenamed, basename(newPath))
+  }
 }
 
 /**
@@ -1673,17 +1681,11 @@ export function markSheetsUntitledPath(path: string): void {
   untitledWorkbookPaths.add(path)
 }
 
-const mcpWritablePaths = new Map<number, Set<string>>()
-
-/** MCP save_session: the shell resolved this path for the tab, so a dialog-free save may write it */
+/** MCP save_session: the shell resolved this path for the tab, so a dialog-free save may write it.
+ *  The store records the owner (the docs pilot's authorizeMcpDocWrite shape): the save routes
+ *  through the document's pinned adapter and never touches disk behind the router's back. */
 export function authorizeMcpSheetWrite(wcId: number, filePath: string): void {
-  const set = mcpWritablePaths.get(wcId) ?? new Set<string>()
-  set.add(filePath)
-  mcpWritablePaths.set(wcId, set)
-}
-
-function canMcpSheetWrite(wcId: number, filePath: string): boolean {
-  return mcpWritablePaths.get(wcId)?.has(filePath) === true
+  getSheetsDocumentStore().authorizeWrite(wcId, { path: filePath })
 }
 
 /** Sanitize an AI-provided sheet name into a safe filename base: strip illegal path chars, collapse whitespace, cap length; null if invalid. (Mirrors slides' draft naming.) */
@@ -1725,20 +1727,46 @@ function userDataPath(...parts: string[]): string {
   return join(app.getPath('userData'), ...parts)
 }
 
+// ── Document store (docs/cloud-backend-auth.md "Document storage modes") ──
+// Every workbook byte movement routes through this store: the session
+// snapshot taken at open, the save, and the 30s crash-recovery copies in the
+// shell go through the storage-mode router (local adapter in `local` mode —
+// today's behavior; the remote adapter PUTs saves and recovery ticks to the
+// server; hybrid mirrors them), while standalone sheets keeps a plain local
+// one. The sidecar itself still works on real files: the store's bytes are
+// materialized at the snapshot/staging paths it opens and writes.
+
+let documentStore: DocumentStore | null = null
+
+function getSheetsDocumentStore(): DocumentStore {
+  if (!documentStore) documentStore = new LocalDocumentStore(app.getPath('userData'))
+  return documentStore
+}
+
+/**
+ * Install/replace the DocumentStore the sheets open/save/recovery handlers
+ * route through (the T14 `setDocumentStore` seam, per editor). Must happen
+ * before the first workbook opens: write grants are remembered per owner
+ * inside the store.
+ */
+export function setSheetsDocumentStore(store: DocumentStore): void {
+  documentStore = store
+}
+
 // ── Crash recovery ──────────────────────────────────────────
-// A dirty renderer asks for a recovery copy every 30s; it is written through the
-// normal save pipeline (writeWorkbookTo) to a userData path, so it is a real .xlsx.
-// A successful save removes it; opening a file whose copy is newer offers Restore.
+// A dirty renderer asks for a recovery copy every 30s; the bytes are produced
+// by the normal save pipeline (writeWorkbookTo) and stored through the
+// document store (the per-mode autosave): a remote-routed workbook's tick
+// PUTs a new server version and keeps no local buffer, local/hybrid
+// workbooks keep the buffer semantics. A successful save removes it; opening
+// a workbook whose copy is newer offers Restore. `recoveryPathFor` is now
+// only the sidecar's staging path for producing those bytes.
 const recoveryDir = () => userDataPath('sheets-autosave')
 const recoveryPathFor = (filePath: string) =>
   join(recoveryDir(), `${createHash('sha1').update(filePath).digest('hex').slice(0, 16)}.xlsx`)
 
 function clearWorkbookRecovery(filePath: string): void {
-  try {
-    unlinkSync(recoveryPathFor(filePath))
-  } catch {
-    /* nothing to clean */
-  }
+  getSheetsDocumentStore().clearRecovery({ path: filePath })
 }
 
 /// Restore/Discard choice for a pending recovery copy. Rendered as a styled
@@ -1753,15 +1781,9 @@ const recoveryPromptWaiters = new Map<number, (choice: RecoveryChoice) => void>(
 function promptRecoveryRestore(
   contents: WebContents,
   filePath: string,
-  recoveryPath: string,
+  savedAtMs: number,
 ): Promise<RecoveryChoice> {
   return new Promise((resolve) => {
-    let savedAtMs = Date.now()
-    try {
-      savedAtMs = statSync(recoveryPath).mtimeMs
-    } catch {
-      /* copy vanished: the prompt still works, just without a precise time */
-    }
     const settle = (choice: RecoveryChoice): void => {
       recoveryPromptWaiters.delete(contents.id)
       contents.removeListener('destroyed', onDestroyed)
@@ -1799,19 +1821,29 @@ async function promptRecoveryRestoreNative(
   return answer.response === 0 ? 'restore' : 'discard'
 }
 
-/** Recovery copy newer than the file itself, i.e. unsaved work from a lost session. */
-function pendingRecoveryFor(filePath: string): string | null {
-  const copy = recoveryPathFor(filePath)
+/** Recovery copy newer than the file itself, i.e. unsaved work from a lost session.
+ *  The copies live in the document store (the docs pilot's recoveryStamp/
+ *  readRecovery contract): a remote-routed workbook has none — its ticks were
+ *  server autosaves, and a reopen downloads the newest version. */
+async function pendingRecoveryBytes(
+  filePath: string,
+): Promise<{ bytes: Buffer; savedAtMs: number } | null> {
+  const store = getSheetsDocumentStore()
+  let stamp: RecoveryStamp | null
   try {
-    if (!existsSync(copy)) return null
-    if (statSync(copy).mtimeMs <= statSync(filePath).mtimeMs) {
-      unlinkSync(copy)
-      return null
-    }
-    return copy
+    stamp = store.recoveryStamp({ path: filePath })
   } catch {
     return null
   }
+  if (stamp === null) return null
+  if (stamp.recoveryMtimeMs <= stamp.documentMtimeMs) {
+    // a stale copy is dropped, the next open must not re-offer it
+    clearWorkbookRecovery(filePath)
+    return null
+  }
+  const bytes = await store.readRecovery({ path: filePath })
+  if (!bytes) return null
+  return { bytes, savedAtMs: stamp.recoveryMtimeMs }
 }
 
 function readJson<T>(path: string, fallback: T): T {
@@ -2405,15 +2437,29 @@ export function registerSheetsIpc(): void {
       if (prepared.importTempDir !== undefined) {
         await cleanupImportTempDirectory(app.getPath('temp'), prepared.importTempDir)
       }
+      if (prepared.stagedRestorePath !== undefined) {
+        await rm(prepared.stagedRestorePath, { force: true }).catch(() => undefined)
+      }
       return null
     }
-    const result = await openWorkbookSession(entry.client, prepared.openPath, entry.sessions, {
-      suggestSaveAs: prepared.suggestSaveAs,
-      csvImport: prepared.csvImport,
-      csvSourcePath: prepared.csvSourcePath,
-      importTempDir: prepared.importTempDir,
-      restoreTarget: prepared.restoreTarget,
-    })
+    let result: WorkbookFile
+    try {
+      result = await openWorkbookSession(entry.client, prepared.openPath, entry.sessions, {
+        suggestSaveAs: prepared.suggestSaveAs,
+        csvImport: prepared.csvImport,
+        csvSourcePath: prepared.csvSourcePath,
+        importTempDir: prepared.importTempDir,
+        restoreTarget: prepared.restoreTarget,
+      })
+    } finally {
+      // the restore staging file only ever feeds the session's snapshot
+      if (prepared.stagedRestorePath !== undefined) {
+        await rm(prepared.stagedRestorePath, { force: true }).catch(() => undefined)
+      }
+    }
+    // the open grant: this tab may now save the workbook (and a remote-mode
+    // scratch file is cleaned up when the last owner goes away)
+    getSheetsDocumentStore().authorizeWrite(event.sender.id, { path })
     // The sidecar open itself can also outlive the tab after the pre-open
     // check. Close the newly registered session instead of stranding it in
     // the detached entry map.
@@ -2904,8 +2950,10 @@ export function registerSheetsIpc(): void {
       targetPath = /\.xlsx$/i.test(request.targetPath)
         ? request.targetPath
         : `${request.targetPath}.xlsx`
-      // only a target the MCP layer resolved for this tab may be written without a dialog
-      if (!canMcpSheetWrite(event.sender.id, targetPath)) {
+      // only a target the MCP layer resolved for this tab may be written
+      // without a dialog — the check runs against the store's grants (the
+      // docs pilot's docs:save-to canWrite shape)
+      if (!(await getSheetsDocumentStore().canWrite(event.sender.id, { path: targetPath }))) {
         throw new Error('save target was not authorized')
       }
       if (existsSync(targetPath) && request.overwrite !== true) {
@@ -2975,6 +3023,15 @@ export function registerSheetsIpc(): void {
     }
 
     const mutation = await writeWorkbookTo(client, session, request, targetPath)
+
+    if (!csvInPlace) {
+      // routed through the store (the docs pilot's shape): the sidecar landed
+      // the bytes at targetPath, and a cloud-mode save mirrors/uploads them
+      // through the document's adapter instead of leaving the file behind the
+      // router's back (in `local` mode this rewrites the same bytes through
+      // the local adapter's atomic write)
+      await getSheetsDocumentStore().write({ path: targetPath }, await readFile(targetPath))
+    }
 
     if (csvInPlace && session.csvSourcePath !== undefined && request.csvContent !== undefined) {
       // The temp copy already holds the saved bytes: refresh the session's
@@ -3083,7 +3140,19 @@ export function registerSheetsIpc(): void {
     if (session.automaticRecoveryDisabled) return { ok: false }
     try {
       await mkdir(recoveryDir(), { recursive: true })
-      await writeWorkbookTo(entry.client, session, request, recoveryPathFor(session.path))
+      // the sidecar produces the copy at a staging path; the bytes are stored
+      // through the document store (per-mode autosave: a remote-routed
+      // workbook's tick PUTs a new server version and keeps no local buffer)
+      const stagePath = recoveryPathFor(session.path)
+      await writeWorkbookTo(entry.client, session, request, stagePath)
+      try {
+        await getSheetsDocumentStore().writeRecovery(
+          { path: session.path },
+          await readFile(stagePath),
+        )
+      } finally {
+        await rm(stagePath, { force: true }).catch(() => undefined)
+      }
       return { ok: true }
     } catch (error) {
       console.warn('[sheets] recovery copy failed:', error)
@@ -3838,12 +3907,14 @@ async function writeWorkbookTo(
 }
 
 /** Copies the workbook into the temp snapshot dir; the copy is the session's
- * save base (see SessionInfo.snapshotPath). */
+ * save base (see SessionInfo.snapshotPath). The bytes come from the document
+ * store: in a cloud mode the snapshot is taken from the workbook's adapter
+ * (the server copy), never a stale local file behind the router's back. */
 async function snapshotWorkbook(path: string): Promise<string> {
   const dir = join(app.getPath('temp'), 'genoffice-sheets-sessions')
   await mkdir(dir, { recursive: true })
   const snapshotPath = join(dir, `${randomUUID()}.xlsx`)
-  await copyFile(path, snapshotPath)
+  await writeFile(snapshotPath, await getSheetsDocumentStore().read({ path }))
   return snapshotPath
 }
 
@@ -3954,6 +4025,8 @@ async function prepareWorkbookForOpen(
   csvSourcePath?: string
   importTempDir?: string
   restoreTarget?: string
+  /** the materialized recovery copy — the caller deletes it once the session opened */
+  stagedRestorePath?: string
 }> {
   const extension = path.slice(path.lastIndexOf('.') + 1).toLowerCase()
   if (extension !== 'csv' && extension !== 'xls') {
@@ -3963,13 +4036,22 @@ async function prepareWorkbookForOpen(
     // prompt (which spells out the overwrite) was the confirmation.
     // Merge sources are read-only picks: never surface (or worse, discard)
     // another workbook's crash recovery from here.
-    const recovery = options?.skipRecoveryPrompt ? undefined : pendingRecoveryFor(path)
+    const recovery = options?.skipRecoveryPrompt ? undefined : await pendingRecoveryBytes(path)
     if (recovery) {
       const choice =
         contents && !contents.isDestroyed()
-          ? await promptRecoveryRestore(contents, path, recovery)
+          ? await promptRecoveryRestore(contents, path, recovery.savedAtMs)
           : await promptRecoveryRestoreNative(parent)
-      if (choice === 'restore') return { openPath: recovery, restoreTarget: path }
+      if (choice === 'restore') {
+        // the stored copy is materialized at a staging path so the sidecar
+        // can open it; the session snapshots it immediately and the caller
+        // deletes the staging file once the session opened
+        const stageDir = recoveryDir()
+        await mkdir(stageDir, { recursive: true })
+        const stagedRestorePath = join(stageDir, `${randomUUID()}.xlsx`)
+        await writeFile(stagedRestorePath, recovery.bytes)
+        return { openPath: stagedRestorePath, restoreTarget: path, stagedRestorePath }
+      }
       if (choice === 'discard') clearWorkbookRecovery(path)
     }
     return { openPath: path }
@@ -3980,9 +4062,13 @@ async function prepareWorkbookForOpen(
   const openPath = join(directory, `${stem}.xlsx`)
   try {
     if (extension === 'csv') {
+      // routed through the store: a cloud-routed workbook's import converts
+      // its adapter's bytes, not a stale local file
       await writeFile(
         openPath,
-        await csvToXlsxBuffer(decodeCsvBuffer(await readFile(path), legacyCsvCharset())),
+        await csvToXlsxBuffer(
+          decodeCsvBuffer(await getSheetsDocumentStore().read({ path }), legacyCsvCharset()),
+        ),
       )
     } else {
       await client.convertWorkbook({ path, targetPath: openPath })

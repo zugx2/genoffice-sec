@@ -20,8 +20,8 @@ import {
 } from 'electron'
 import type { WebContents } from 'electron'
 import { execFile } from 'node:child_process'
-import { readFile, writeFile, rm, stat, mkdir, open } from 'node:fs/promises'
-import { createHash, randomUUID } from 'node:crypto'
+import { readFile, writeFile, rm, mkdir } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync } from 'node:fs'
 import { userInfo } from 'node:os'
 import { basename, dirname, join, resolve } from 'node:path'
@@ -67,6 +67,8 @@ import {
 } from './paste-cascade'
 import { getUiLang, normalizeLang, setUiLang } from '@genoffice/i18n'
 import { ProjectStore } from '@genoffice/project-store'
+import { LocalDocumentStore } from '@genoffice/document-store'
+import type { DocumentStore, RecoveryStamp } from '@genoffice/document-store'
 import {
   copyElementData,
   findGroupChild,
@@ -385,6 +387,9 @@ function trackSlidesWebContents(wc: WebContents): void {
     sessions.delete(wc.id)
     pendingByWc.delete(wc.id)
     lastSlidePaste.delete(wc.id)
+    // drop the store's per-owner grants (and the remote scratch file when
+    // this was its last owner)
+    getSlidesDocumentStore().forgetOwner(wc.id)
     closeSaveWaiters.get(wc.id)?.(false)
     closeSaveWaiters.delete(wc.id)
     autoSavePrefByWc.delete(wc.id)
@@ -434,7 +439,20 @@ export async function saveSessionDeckTo(session: Session, filePath: string): Pro
   // the caller supplies an arbitrary absolute path, so its parent may not exist
   // yet (the dialog-driven paths always land in an existing folder)
   await mkdir(dirname(filePath), { recursive: true })
-  await savePptxToFile(session.opened, filePath)
+  // MCP save_session: the store records the owner, and the write routes
+  // through the document's adapter (a remote-mode deck PUTs — it never
+  // touches disk behind the router's back). Every tab attached to this
+  // session (aliased entries share it) becomes a granted owner.
+  for (const [id, attached] of sessions) {
+    if (attached === session) {
+      getSlidesDocumentStore().authorizeWrite(id, { path: filePath })
+    }
+  }
+  const bytes = await savePptx(session.opened)
+  await getSlidesDocumentStore().write(
+    { path: filePath },
+    Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength),
+  )
   session.path = filePath
   autosaveBackoff.delete(filePath)
   // mirror slides:save-as: a saved deck is no longer an unsaved untitled draft
@@ -465,9 +483,26 @@ async function readRecent(): Promise<string[]> {
   }
 }
 
+/**
+ * Paths whose persistence is not a local file (the storage-mode seam,
+ * Phase 7f): a remote-routed document's path is an ephemeral scratch file, so
+ * a recents row would point at a file that never exists. The shell installs
+ * the predicate (the document-store router's `isCloudOnlyPath`); standalone
+ * slides never does and keeps every path.
+ */
+let recentPathFilter: ((filePath: string) => boolean) | null = null
+
+/** Installs (or clears) the recents path filter — see {@link recentPathFilter}. */
+export function setSlidesRecentPathFilter(filter: ((filePath: string) => boolean) | null): void {
+  recentPathFilter = filter
+}
+
 async function pushRecent(path: string): Promise<void> {
   // A headless export is not a document the user opened.
   if (isHeadlessMode()) return
+  // a remote-routed document's identity is its cloud id, not this path —
+  // the home cloud view is its row, the local recents list must not grow one
+  if (recentPathFilter?.(path)) return
   const cur = await readRecent()
   const next = [path, ...cur.filter((p) => p !== path)].slice(0, 10)
   try {
@@ -498,13 +533,43 @@ export async function replaceSlidesRecentFile(oldPath: string, newPath: string):
 export function slidesFileRenamed(wc: WebContents, oldPath: string, newPath: string): void {
   const session = sessions.get(wc.id)
   if (session && session.path === oldPath) session.path = newPath
+  // keep the store's grant and recovery copies keyed at the new path
+  getSlidesDocumentStore().renameOwnerPath(wc.id, oldPath, newPath)
   wc.send('slides:renamed', newPath)
 }
 
+// ── Document store (docs/cloud-backend-auth.md "Document storage modes") ──
+// Every slides document byte movement routes through this store: open reads,
+// saves, and the 30s crash-recovery copies in the shell go through the
+// storage-mode router (local adapter in `local` mode — today's behavior; the
+// remote adapter PUTs saves and recovery ticks to the server; hybrid mirrors
+// them), standalone slides keeps a plain local one. The store is installed
+// before documents open (the docs pilot's shape): grants and pinning live
+// inside it, so swapping it under open tabs is not supported and never
+// needed — the router re-resolves per operation.
+
+let documentStore: DocumentStore | null = null
+
+function getSlidesDocumentStore(): DocumentStore {
+  if (!documentStore) documentStore = new LocalDocumentStore(app.getPath('userData'))
+  return documentStore
+}
+
+/**
+ * Install/replace the DocumentStore the slides open/save/recovery handlers
+ * route through (the T14 `setDocumentStore` seam, per editor). Must happen
+ * before the first document opens: write grants are remembered per owner
+ * inside the store.
+ */
+export function setSlidesDocumentStore(store: DocumentStore): void {
+  documentStore = store
+}
+
 // ── Autosave (crash recovery): dirty sessions write a recovery copy every 30s; a normal save cleans it up ──
-const autosaveDir = () => join(app.getPath('userData'), 'slides-autosave')
-const autosavePathFor = (filePath: string) =>
-  join(autosaveDir(), `${createHash('sha1').update(filePath).digest('hex').slice(0, 16)}.pptx`)
+// The copies live in the document store (the per-mode autosave, Phase 7e): a
+// remote-routed deck's tick PUTs a new server version and keeps no local
+// buffer, local/hybrid decks keep the buffer semantics. Untitled decks still
+// save a visible draft file (a real artifact, not a hidden copy).
 
 function sessionDirty(session: Session): boolean {
   return (
@@ -548,29 +613,46 @@ setInterval(() => {
       if (seen.has(session)) continue
       seen.add(session)
       if (session.masterEdit || !sessionDirty(session)) continue
-      let target: string
       if (session.path) {
-        target = autosavePathFor(session.path)
-      } else {
-        let draft = untitledRecovery.get(wcId)
-        if (!draft) {
-          draft = join(getDraftsDir(), newDraftFilename())
-          untitledRecovery.set(wcId, draft)
+        // keyed deck: the tick writes the recovery copy through the document
+        // store (a remote-routed deck's tick IS the server autosave — no
+        // local buffer is kept)
+        const skip = autosaveBackoff.get(session.path) ?? 0
+        if (skip > 0) {
+          autosaveBackoff.set(session.path, skip - 1)
+          continue
         }
-        target = draft
+        try {
+          const bytes = await savePptx(session.opened)
+          await getSlidesDocumentStore().writeRecovery(
+            { path: session.path },
+            Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength),
+          )
+          autosaveBackoff.delete(session.path)
+        } catch (error) {
+          autosaveBackoff.set(session.path, AUTOSAVE_BACKOFF_TICKS)
+          console.warn('[slides] autosave failed, retrying in ~5 min:', error)
+        }
+        continue
       }
-      const backoffKey = session.path ?? target
-      const skip = autosaveBackoff.get(backoffKey) ?? 0
+      // Untitled deck: a visible draft file (a real artifact the user can
+      // open), removed on save, explicit discard, or clean close.
+      let draft = untitledRecovery.get(wcId)
+      if (!draft) {
+        draft = join(getDraftsDir(), newDraftFilename())
+        untitledRecovery.set(wcId, draft)
+      }
+      const skip = autosaveBackoff.get(draft) ?? 0
       if (skip > 0) {
-        autosaveBackoff.set(backoffKey, skip - 1)
+        autosaveBackoff.set(draft, skip - 1)
         continue
       }
       try {
-        await mkdir(dirname(target), { recursive: true })
-        await savePptxToFile(session.opened, target)
-        autosaveBackoff.delete(backoffKey)
+        await mkdir(dirname(draft), { recursive: true })
+        await savePptxToFile(session.opened, draft)
+        autosaveBackoff.delete(draft)
       } catch (error) {
-        autosaveBackoff.set(backoffKey, AUTOSAVE_BACKOFF_TICKS)
+        autosaveBackoff.set(draft, AUTOSAVE_BACKOFF_TICKS)
         console.warn('[slides] autosave failed, retrying in ~5 min:', error)
       }
     }
@@ -652,7 +734,7 @@ export async function requestSlidesClose(
   if (response === 1) {
     // User explicitly discarded changes: also delete the recovery copy, so the next open does not show a pointless recovery prompt
     const session = sessions.get(contents.id)
-    if (session?.path) void rm(autosavePathFor(session.path), { force: true }).catch(() => {})
+    if (session?.path) getSlidesDocumentStore().clearRecovery({ path: session.path })
     dropUntitledRecovery(contents.id)
     return true
   }
@@ -668,7 +750,7 @@ export async function requestSlidesClose(
  */
 export function discardSlidesRecovery(contents: WebContents): void {
   const session = sessions.get(contents.id)
-  if (session?.path) void rm(autosavePathFor(session.path), { force: true }).catch(() => {})
+  if (session?.path) getSlidesDocumentStore().clearRecovery({ path: session.path })
   dropUntitledRecovery(contents.id)
 }
 
@@ -677,14 +759,20 @@ async function maybeRecoverBytes(
   path: string,
   original: Uint8Array,
 ): Promise<{ bytes: Uint8Array; recovered: boolean }> {
-  const asPath = autosavePathFor(path)
+  // the recovery copies live in the document store (the docs pilot's
+  // recoveryStamp/readRecovery contract): a remote-routed deck has none — its
+  // ticks were server autosaves, and a reopen downloads the newest version
+  const store = getSlidesDocumentStore()
+  let stamp: RecoveryStamp | null
   try {
-    const [asStat, origStat] = await Promise.all([stat(asPath), stat(path)])
-    if (asStat.mtimeMs <= origStat.mtimeMs) {
-      await rm(asPath, { force: true })
-      return { bytes: original, recovered: false }
-    }
+    stamp = store.recoveryStamp({ path })
   } catch {
+    return { bytes: original, recovered: false }
+  }
+  if (stamp === null) return { bytes: original, recovered: false }
+  if (stamp.recoveryMtimeMs <= stamp.documentMtimeMs) {
+    // an older copy is stale: drop it, the next open must not re-offer it
+    store.clearRecovery({ path })
     return { bytes: original, recovered: false }
   }
   const parent = dialogParent()
@@ -700,10 +788,11 @@ async function maybeRecoverBytes(
     ? await dialog.showMessageBox(parent, options)
     : await dialog.showMessageBox(options)
   if (r.response === 0) {
-    const bytes = await readFile(asPath)
-    return { bytes: new Uint8Array(bytes), recovered: true }
+    const copy = await store.readRecovery({ path })
+    if (copy) return { bytes: new Uint8Array(copy), recovered: true }
+    return { bytes: original, recovered: false }
   }
-  await rm(asPath, { force: true })
+  store.clearRecovery({ path })
   return { bytes: original, recovered: false }
 }
 
@@ -713,25 +802,33 @@ async function maybeRecoverBytes(
  * EncryptedPackage stream is a password-protected pptx and gets dedicated copy (instead of being mislabeled as the legacy format).
  */
 async function rejectLegacyPpt(path: string): Promise<boolean> {
-  let head: Buffer
+  // sniff the routed bytes: a cloud-routed document's magic number is checked
+  // on what the store returns (a remote-mode scratch file may not exist yet)
+  let bytes: Buffer
   try {
-    const fh = await open(path, 'r')
-    try {
-      head = Buffer.alloc(8)
-      await fh.read(head, 0, 8, 0)
-    } finally {
-      await fh.close()
-    }
+    bytes = await getSlidesDocumentStore().read({ path })
   } catch {
+    // unreadable/missing: the caller's own open produces the real error
     return false
   }
-  if (!isCfbHeader(head)) return false
+  return rejectLegacyPptBytes(path, bytes)
+}
+
+/** The sniff half of {@link rejectLegacyPpt} over bytes the caller already
+ *  routed (so a store-backed open does not download the deck twice). */
+function rejectLegacyPptBytes(path: string, bytes: Buffer): boolean {
+  if (!isCfbHeader(bytes.subarray(0, 8))) return false
   let kind: 'legacy' | 'encrypted' = 'legacy'
   try {
-    kind = cfbKind(await readFile(path)) ?? 'legacy'
+    kind = cfbKind(bytes) ?? 'legacy'
   } catch {
     // on read failure, fall back to the legacy-format message
   }
+  void showLegacyPptWarning(kind)
+  return true
+}
+
+async function showLegacyPptWarning(kind: 'legacy' | 'encrypted'): Promise<void> {
   const parent = dialogParent()
   const options = {
     type: 'warning' as const,
@@ -741,7 +838,6 @@ async function rejectLegacyPpt(path: string): Promise<boolean> {
   }
   if (parent) await dialog.showMessageBox(parent, options)
   else await dialog.showMessageBox(options)
-  return true
 }
 
 /** Register the deck's usable embedded fonts before layout; new faces invalidate cached metrics. */
@@ -772,6 +868,9 @@ async function openAndBuild(
   wc: WebContents,
   path: string,
   fitWidthPx: number,
+  /** bytes already routed through the store by the caller's sniff — an open
+   *  must not download a remote deck twice */
+  routed?: { bytes: Buffer },
 ): Promise<OpenResult> {
   // Same file already open in another window: attach to that session instead of
   // opening an independent copy (which would silently lose the loser's edits on
@@ -791,7 +890,10 @@ async function openAndBuild(
       defaultFont: deckDefaultFont(existing.opened),
     }
   }
-  const raw = await readFile(path)
+  const raw = routed?.bytes ?? (await getSlidesDocumentStore().read({ path }))
+  // the open grant: this view may now save the deck (and a remote-mode
+  // scratch file is cleaned up when the last owner goes away)
+  getSlidesDocumentStore().authorizeWrite(wc.id, { path })
   const { bytes, recovered } = await maybeRecoverBytes(path, new Uint8Array(raw))
   await shapedMetricsReady() // Lay out only after complex-script shaped metrics are ready, avoiding an init race falling back to estimation
   const opened = await openPptx(bytes)
@@ -886,7 +988,9 @@ async function saveDraftAfterGenerate(
       draftPath = pickDraftPath(draftsDir, deckName)
     }
 
-    await writeFile(draftPath, Buffer.from(bytes))
+    // routed through the store: in a cloud mode a generated draft uploads
+    // (the docs pilot's save-new shape) instead of only landing on disk
+    await getSlidesDocumentStore().write({ path: draftPath }, Buffer.from(bytes))
     session.path = draftPath
     await pushRecent(draftPath)
     slidesOpenedHook?.(wc, draftPath)
@@ -1310,9 +1414,16 @@ export function registerSlidesIpc(): void {
   })
 
   ipcMain.handle('slides:open-path', async (e, path: string, fitWidthPx: number) => {
-    if (!path || !existsSync(path)) return null
-    if (await rejectLegacyPpt(path)) return null
-    return openAndBuild(e.sender, path, fitWidthPx)
+    // routed existence check: a cloud-routed path is backed by the store, not
+    // necessarily by the filesystem yet
+    if (!path || !(await getSlidesDocumentStore().exists({ path }))) return null
+    // one routed read feeds both the CFB sniff and the open (a remote deck
+    // must not download twice)
+    const bytes = await getSlidesDocumentStore().read({ path })
+    // A CFB file (legacy .ppt / encrypted, possibly misnamed .pptx) can never
+    // parse: tell the user and drop it
+    if (rejectLegacyPptBytes(path, bytes)) return null
+    return openAndBuild(e.sender, path, fitWidthPx, { bytes })
   })
 
   ipcMain.handle('slides:consume-pending-open', async (e, fitWidthPx: number) => {
@@ -1320,19 +1431,23 @@ export function registerSlidesIpc(): void {
     // the (now painted) page without flashing raw desktop during load
     vibFlip.get(e.sender.id)?.('#00000000')
     const queued = pendingByWc.get(e.sender.id) ?? pendingOpenPath
-    if (queued && existsSync(queued)) {
+    // routed existence check (a remote-mode scratch file is created by the
+    // routed read); a genuinely missing path falls to the restore branch below
+    if (queued && (await getSlidesDocumentStore().exists({ path: queued }))) {
       const dropQueued = () => {
         if (pendingByWc.get(e.sender.id) === queued) pendingByWc.delete(e.sender.id)
         if (pendingOpenPath === queued) pendingOpenPath = null
       }
+      // one routed read feeds both the CFB sniff and the open
+      const bytes = await getSlidesDocumentStore().read({ path: queued })
       // A CFB file (legacy .ppt / encrypted, possibly misnamed .pptx) can never
       // parse: tell the user and drop it, or every relaunch restores a blank tab
-      if (await rejectLegacyPpt(queued)) {
+      if (rejectLegacyPptBytes(queued, bytes)) {
         dropQueued()
         return null
       }
       // Clear the queue only after a successful open: keep it on parse failure or a mid-flight renderer reload, so a remount can retry
-      const result = await openAndBuild(e.sender, queued, fitWidthPx)
+      const result = await openAndBuild(e.sender, queued, fitWidthPx, { bytes })
       dropQueued()
       return result
     }
@@ -4095,9 +4210,15 @@ export function registerSlidesIpc(): void {
       slidesOpenedHook?.(e.sender, session.path)
     }
     try {
-      await savePptxToFile(session.opened, session.path)
+      // routed through the store (the docs pilot's shape): a cloud-mode save
+      // uploads/mirrors instead of only touching the file behind the router
+      const bytes = await savePptx(session.opened)
+      await getSlidesDocumentStore().write(
+        { path: session.path },
+        Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength),
+      )
       autosaveBackoff.delete(session.path)
-      void rm(autosavePathFor(session.path), { force: true }).catch(() => {})
+      getSlidesDocumentStore().clearRecovery({ path: session.path })
       dropUntitledRecovery(e.sender.id)
       // Bake the saved patches back into the in-memory model (clears dirty, syncs
       // anchor.originalXml with disk) — a full reopen would re-read and unzip the
@@ -4126,7 +4247,13 @@ export function registerSlidesIpc(): void {
     const r = await showSaveDialogWithMemory(dialog, parent, options, getDraftsDir())
     if (r.canceled || !r.filePath) return { ok: false }
     try {
-      await savePptxToFile(session.opened, r.filePath)
+      // routed through the store (the docs pilot's shape): a cloud-mode save
+      // uploads/mirrors instead of only touching the file behind the router
+      const bytes = await savePptx(session.opened)
+      await getSlidesDocumentStore().write(
+        { path: r.filePath },
+        Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength),
+      )
       session.path = r.filePath
       autosaveBackoff.delete(r.filePath)
       dropUntitledRecovery(e.sender.id)

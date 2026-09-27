@@ -63,7 +63,11 @@ vi.mock('../src/main/save-pdf', async (importOriginal) => {
 })
 
 vi.mock('electron', () => ({
-  app: { on: vi.fn(), whenReady: vi.fn(() => new Promise(() => {})) },
+  app: {
+    getPath: vi.fn(() => tmpdir()),
+    on: vi.fn(),
+    whenReady: vi.fn(() => new Promise(() => {})),
+  },
   dialog: {},
   shell: {},
   BrowserWindow: class {},
@@ -118,6 +122,10 @@ describe('in-place PDF page operation writes', () => {
 
     expect(result.ok).toBe(false)
     expect(readFileSync(preserved)).toEqual(original)
-    expect(readdirSync(dir).filter((name) => name.includes('.gensave-'))).toEqual([])
+    // no temp file survives the failed rename: the pdf `.gensave-` naming and
+    // the document-store adapter's `.<name>.<hex>.tmp` naming both clean up
+    expect(
+      readdirSync(dir).filter((name) => name.includes('.gensave-') || name.endsWith('.tmp')),
+    ).toEqual([])
   })
 })

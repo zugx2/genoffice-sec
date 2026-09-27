@@ -63,7 +63,8 @@ import type {
   ValidateTextEditsRequest,
 } from '../shared/ipc'
 import type { SavedSignature } from '../shared/ipc'
-import { writePdfAtomically } from './atomic-write'
+import { LocalDocumentStore } from '@genoffice/document-store'
+import type { DocumentStore } from '@genoffice/document-store'
 import {
   cropPagesBytes,
   extractPagesBytes,
@@ -73,7 +74,7 @@ import {
   mergePdfBytes,
   readStaticFormFills,
   replacePagesBytes,
-  savePdfToPath,
+  savePdfBytes,
   setPageSizeBytes,
   splitPagesBytes,
   splitPdfBytes,
@@ -575,6 +576,44 @@ function openGeneratedPdf(path: string): void {
  * (View > Reload) remounts the renderer and consumes again — a one-shot entry
  * would strand the tab on "No file to open". */
 const openPathByWc = new Map<number, string>()
+
+// ── Document store (docs/cloud-backend-auth.md "Document storage modes") ──
+// Every open document's byte movement routes through this store: the routed
+// open read, the save handler, and the in-place page ops in the shell go
+// through the storage-mode router (local adapter in `local` mode — today's
+// behavior; the remote adapter PUTs to the server; hybrid mirrors), while
+// standalone pdf keeps a plain local one. The store is installed before
+// documents open (the docs pilot's shape): grants and pinning live inside it,
+// so swapping it under open tabs is not supported and never needed — the
+// router re-resolves per operation.
+
+let documentStore: DocumentStore | null = null
+
+function getPdfDocumentStore(): DocumentStore {
+  if (!documentStore) documentStore = new LocalDocumentStore(app.getPath('userData'))
+  return documentStore
+}
+
+/**
+ * Install/replace the DocumentStore the pdf open/save handlers route through
+ * (the T14 `setDocumentStore` seam, per editor). Must happen before the first
+ * document opens: write grants are remembered per owner inside the store.
+ */
+export function setPdfDocumentStore(store: DocumentStore): void {
+  documentStore = store
+}
+
+/**
+ * The open document's current bytes, read through the store: in a cloud mode
+ * this downloads a remote document (or reads the server copy of an associated
+ * path) instead of touching the local file behind the router's back. Only
+ * callers holding an open document's path may use this — user-picked external
+ * files (merge/insert sources) stay plain fs reads.
+ */
+async function readDocumentBytes(path: string): Promise<Uint8Array> {
+  return new Uint8Array(await getPdfDocumentStore().read({ path }))
+}
+
 /** File paths granted to each view — readFile only allows these */
 const allowedByWc = new Map<number, Set<string>>()
 /** Unsaved-changes flags mirrored from the renderer; drives the save prompt before closing a tab/window */
@@ -617,6 +656,9 @@ export function pdfFileRenamed(contents: WebContents, oldPath: string, newPath: 
   if (allowed?.has(oldPath)) allowed.add(newPath)
   if (saveAsTargetByWc.get(wcId) === oldPath) saveAsTargetByWc.set(wcId, newPath)
   if (untitledPdfPaths.delete(oldPath)) untitledPdfPaths.add(newPath)
+  // keep the store's grant and recorded state keyed at the new path (the docs
+  // pilot's renameOwnerPath seam)
+  getPdfDocumentStore().renameOwnerPath(wcId, oldPath, newPath)
   if (!contents.isDestroyed()) contents.send(PDF_CHANNELS.fileRenamed, newPath)
 }
 
@@ -872,7 +914,10 @@ function registerPdfIpc(): void {
     if (typeof path !== 'string' || !allowedByWc.get(e.sender.id)?.has(path)) {
       throw new Error('pdf: path not granted to this view')
     }
-    const buf = await readFile(path)
+    const buf = await getPdfDocumentStore().read({ path })
+    // the open grant: this view may now save the document (and a remote-mode
+    // scratch file is cleaned up when the last owner goes away)
+    getPdfDocumentStore().authorizeWrite(e.sender.id, { path })
     return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength)
   })
 
@@ -937,16 +982,25 @@ function registerPdfIpc(): void {
       request = { ...request, redactions: regions }
     }
     try {
-      const { skippedTextEdits, skippedTextInserts, skippedImageEdits } = await savePdfToPath(
-        path,
-        target,
-        request,
-      )
+      // routed through the store (the docs pilot's shape): the source bytes
+      // come from the document's adapter and the result is written back
+      // through it — a cloud-mode save uploads/mirrors instead of only
+      // touching the file behind the router's back
+      const source = await getPdfDocumentStore().read({ path })
+      const applied = await savePdfBytes(new Uint8Array(source), request)
+      getPdfDocumentStore().authorizeWrite(e.sender.id, { path: target })
+      await getPdfDocumentStore().write({ path: target }, Buffer.from(applied.bytes))
       return {
         ok: true,
-        ...(skippedTextEdits.length > 0 ? { skippedTextEdits } : {}),
-        ...(skippedTextInserts.length > 0 ? { skippedTextInserts } : {}),
-        ...(skippedImageEdits.length > 0 ? { skippedImageEdits } : {}),
+        ...(applied.skippedTextEdits.length > 0
+          ? { skippedTextEdits: applied.skippedTextEdits }
+          : {}),
+        ...(applied.skippedTextInserts.length > 0
+          ? { skippedTextInserts: applied.skippedTextInserts }
+          : {}),
+        ...(applied.skippedImageEdits.length > 0
+          ? { skippedImageEdits: applied.skippedImageEdits }
+          : {}),
       }
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) }
@@ -1035,14 +1089,14 @@ function registerPdfIpc(): void {
     }
     // Lazy import like the text-edit paths: pdfium wasm only loads when the feature is used
     const { listPageImages } = await import('./image-edit')
-    return listPageImages(new Uint8Array(await readFile(path)))
+    return listPageImages(await readDocumentBytes(path))
   })
 
   ipcMain.handle(PDF_CHANNELS.listStaticFormFills, async (e, path: unknown) => {
     if (typeof path !== 'string' || !allowedByWc.get(e.sender.id)?.has(path)) {
       throw new Error('pdf: path not granted to this view')
     }
-    return readStaticFormFills(new Uint8Array(await readFile(path)))
+    return readStaticFormFills(await readDocumentBytes(path))
   })
 
   ipcMain.handle(PDF_CHANNELS.ocrPage, async (_e, png: unknown) => {
@@ -1074,7 +1128,7 @@ function registerPdfIpc(): void {
       }
       const { renderImagePng } = await import('./image-edit')
       return renderImagePng(
-        new Uint8Array(await readFile(path)),
+        await readDocumentBytes(path),
         pageIndex,
         rect,
         typeof scale === 'number' && Number.isFinite(scale) ? scale : 1,
@@ -1097,7 +1151,7 @@ function registerPdfIpc(): void {
       throw new Error('pdf: path not granted to this view')
     }
     const { renderPagePreviewPng } = await import('./image-edit')
-    return renderPagePreviewPng(new Uint8Array(await readFile(path)), {
+    return renderPagePreviewPng(await readDocumentBytes(path), {
       pageIndex,
       excludeRects,
       excludeAnnots,
@@ -1120,7 +1174,7 @@ function registerPdfIpc(): void {
       }
       // Same lazy import as the save path: the pdfium wasm only loads when text editing is used
       const { validateTextEdits } = await import('./text-edit')
-      return validateTextEdits(new Uint8Array(await readFile(path)), edits)
+      return validateTextEdits(await readDocumentBytes(path), edits)
     },
   )
 
@@ -1155,7 +1209,7 @@ function registerPdfIpc(): void {
         return { ok: false, error: 'pdf: path not granted to this view' }
       }
       try {
-        const bytes = await extractPagesBytes(new Uint8Array(await readFile(path)), pages)
+        const bytes = await extractPagesBytes(await readDocumentBytes(path), pages)
         const targetPath = uniqueGeneratedPdfPath(
           configuredDefaultSaveDir(app),
           String(suggestedName || 'pages.pdf'),
@@ -1187,11 +1241,11 @@ function registerPdfIpc(): void {
       if (picked.canceled || !other) return { ok: true, canceled: true }
       try {
         const { merged, count } = await insertPdfBytes(
-          new Uint8Array(await readFile(path)),
+          await readDocumentBytes(path),
           new Uint8Array(await readFile(other)),
           typeof afterPageIndex === 'number' ? afterPageIndex : -1,
         )
-        await writePdfAtomically(path, merged)
+        await getPdfDocumentStore().write({ path }, Buffer.from(merged))
         return { ok: true, insertedCount: count }
       } catch (err) {
         return { ok: false, error: err instanceof Error ? err.message : String(err) }
@@ -1208,10 +1262,10 @@ function registerPdfIpc(): void {
       }
       try {
         const bytes = await insertBlankPageBytes(
-          new Uint8Array(await readFile(path)),
+          await readDocumentBytes(path),
           typeof afterPageIndex === 'number' ? afterPageIndex : -1,
         )
-        await writePdfAtomically(path, bytes)
+        await getPdfDocumentStore().write({ path }, Buffer.from(bytes))
         return { ok: true }
       } catch (err) {
         return { ok: false, error: err instanceof Error ? err.message : String(err) }
@@ -1236,7 +1290,7 @@ function registerPdfIpc(): void {
       if (picked.canceled || !dir) return { ok: true, canceled: true }
       try {
         const parts = await splitPdfBytes(
-          new Uint8Array(await readFile(path)),
+          await readDocumentBytes(path),
           typeof chunkSize === 'number' ? chunkSize : 1,
         )
         const safeBase = String(baseName || 'split').replace(/[/\\:*?"<>|]/g, '_')
@@ -1271,10 +1325,7 @@ function registerPdfIpc(): void {
         const others = await Promise.all(
           picked.filePaths.map(async (p) => new Uint8Array(await readFile(p))),
         )
-        const { merged, appended } = await mergePdfBytes(
-          new Uint8Array(await readFile(path)),
-          others,
-        )
+        const { merged, appended } = await mergePdfBytes(await readDocumentBytes(path), others)
         const targetPath = uniqueGeneratedPdfPath(
           configuredDefaultSaveDir(app),
           String(suggestedName || 'merged.pdf'),
@@ -1299,7 +1350,7 @@ function registerPdfIpc(): void {
         return { ok: false, error: 'pdf: pages-per-sheet must be 2-16' }
       }
       try {
-        const bytes = await mergePagesBytes(new Uint8Array(await readFile(path)), {
+        const bytes = await mergePagesBytes(await readDocumentBytes(path), {
           perSheet,
           direction: direction === 'horizontal' ? 'horizontal' : 'vertical',
           separator: separator === true,
@@ -1340,11 +1391,11 @@ function registerPdfIpc(): void {
       if (picked.canceled || !other) return { ok: true, canceled: true }
       try {
         const { merged, removed, inserted } = await replacePagesBytes(
-          new Uint8Array(await readFile(path)),
+          await readDocumentBytes(path),
           new Uint8Array(await readFile(other)),
           pages,
         )
-        await writePdfAtomically(path, merged)
+        await getPdfDocumentStore().write({ path }, Buffer.from(merged))
         return { ok: true, removed, inserted }
       } catch (err) {
         return { ok: false, error: err instanceof Error ? err.message : String(err) }
@@ -1363,8 +1414,8 @@ function registerPdfIpc(): void {
         return { ok: false, error: 'pdf: invalid page size' }
       }
       try {
-        const bytes = await setPageSizeBytes(new Uint8Array(await readFile(path)), width, height)
-        await writePdfAtomically(path, bytes)
+        const bytes = await setPageSizeBytes(await readDocumentBytes(path), width, height)
+        await getPdfDocumentStore().write({ path }, Buffer.from(bytes))
         return { ok: true }
       } catch (err) {
         return { ok: false, error: err instanceof Error ? err.message : String(err) }
@@ -1383,7 +1434,7 @@ function registerPdfIpc(): void {
         return { ok: false, error: 'pdf: unsupported split grid' }
       }
       try {
-        const bytes = await splitPagesBytes(new Uint8Array(await readFile(path)), perPage)
+        const bytes = await splitPagesBytes(await readDocumentBytes(path), perPage)
         const targetPath = uniqueGeneratedPdfPath(
           configuredDefaultSaveDir(app),
           String(suggestedName || 'split-pages.pdf'),
@@ -1411,8 +1462,8 @@ function registerPdfIpc(): void {
         return { ok: false, error: 'pdf: path not granted to this view' }
       }
       try {
-        const bytes = await cropPagesBytes(new Uint8Array(await readFile(path)), pages, rect)
-        await writePdfAtomically(path, bytes)
+        const bytes = await cropPagesBytes(await readDocumentBytes(path), pages, rect)
+        await getPdfDocumentStore().write({ path }, Buffer.from(bytes))
         return { ok: true }
       } catch (err) {
         return { ok: false, error: err instanceof Error ? err.message : String(err) }
@@ -1506,7 +1557,12 @@ function grantAndTrack(wc: WebContents, openPath?: string | null): void {
   const wcId = wc.id
   const allowedPaths = new Set<string>()
   allowedByWc.set(wcId, allowedPaths)
-  if (openPath && existsSync(openPath)) {
+  if (openPath) {
+    // tracked without an existsSync gate: a cloud-routed document's path is
+    // backed by the store (a remote-mode scratch file is created by the
+    // routed read), not necessarily by the filesystem yet. Every caller that
+    // passes a path has already verified a local file OR comes from a cloud
+    // open plan; a genuinely missing path fails the routed read.
     openPathByWc.set(wcId, openPath)
     allowedPaths.add(openPath)
   }
@@ -1521,6 +1577,9 @@ function grantAndTrack(wc: WebContents, openPath?: string | null): void {
     allowedByWc.delete(wcId)
     dirtyByWc.delete(wcId)
     saveAsTargetByWc.delete(wcId)
+    // drop the store's per-owner grants (and the remote scratch file when
+    // this was its last owner)
+    getPdfDocumentStore().forgetOwner(wcId)
     closeSaveWaiters.get(wcId)?.(false)
     closeSaveWaiters.delete(wcId)
     saveAsWaiters.get(wcId)?.(false)

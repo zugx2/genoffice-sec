@@ -183,6 +183,7 @@ import {
   sendSheetsMenuAction,
   sheetsFileRenamed,
   setSheetsCloseTabHook,
+  setSheetsDocumentStore,
   setSheetsExtraFileMenuItems,
   setSheetsShellWindow,
   setSheetsWorkbookOpenedHook,
@@ -199,6 +200,8 @@ import {
   setSlidesCloseTabHook,
   setSlidesExtraFileMenuItems,
   setSlidesOpenedHook,
+  setSlidesDocumentStore,
+  setSlidesRecentPathFilter,
   setSlidesShellWindow,
   setSlidesShowBleed,
   slidesFileRenamed,
@@ -212,6 +215,7 @@ import {
   requestPdfClose,
   requestPdfSaveAs,
   sendPdfPrintRequest,
+  setPdfDocumentStore,
   setPdfRenamedHook,
   setPdfSaveAsInFlight,
 } from '../../../pdf/src/main/pdf-main'
@@ -231,6 +235,7 @@ import {
   requestMarkdownSave,
   sendMarkdownExportRequest,
   sendMarkdownPrintRequest,
+  setMarkdownDocumentStore,
   setMarkdownDocxExportedHook,
   setMarkdownFileSavedHook,
 } from '../../../markdown/src/main/markdown-main'
@@ -248,6 +253,7 @@ import {
   sendHtmlPrintRequest,
   setHtmlDocxExportPrepareHook,
   setHtmlDocxExportedHook,
+  setHtmlDocumentStore,
   setHtmlFileSavedHook,
   setHtmlPresentHooks,
   setHtmlProvisionalTitleHook,
@@ -4809,20 +4815,23 @@ registerStorageModeIpc({
   // the folder tree's own recursive listing (hidden entries and non-document
   // files filtered the same way the home tree filters them)
   listLocalDocuments: (dir) => collectTreeFiles(dir),
-  // the open plan lands in a docs tab: remote documents are keyed by cloudId
-  // (title = server name), downloads by the path the file landed on
+  // the open plan lands in the editor tab its kind picks: remote documents are
+  // keyed by cloudId (title = server name), downloads by the path the file
+  // landed on (Phase 7f — every kind, the docs pilot's rules)
   openCloudTab: (plan) => {
     const manager = tabManager
     if (!manager) return false
+    const openTab = openCloudTabForKind(manager, plan.documentKind)
+    if (!openTab) return false
     if (plan.kind === 'remote') {
       const existing = manager.findTabByCloudId(plan.cloudId)
       if (existing) manager.activateTab(existing.id)
-      else manager.openDocsTab(plan.path, { cloudId: plan.cloudId, title: plan.name })
+      else openTab(plan.path, { cloudId: plan.cloudId, title: plan.name })
       return true
     }
     const existing = manager.findTabByPath(plan.path)
     if (existing) manager.activateTab(existing.id)
-    else manager.openDocsTab(plan.path)
+    else openTab(plan.path)
     return true
   },
   // a first save minted the server identity: the tab holding the path follows
@@ -4840,12 +4849,46 @@ registerStorageModeIpc({
   // process exit and also covers a quit that never reaches the exit hook)
   onExit: (wipe) => app.on('will-quit', wipe),
 })
-// the docs editor (the pilot — the other editors roll out in T17) routes its
-// save/open handlers through the storage-mode router from here on
+// every editor routes its save/open handlers through the storage-mode router
+// from here on (the docs pilot, rolled out to all six in Phase 7f); the
+// router re-resolves (mode, session) per operation, so one installation per
+// editor is what lets an open tab keep the adapter it was opened under
 setDocumentStore(getDocumentStoreRouter()!)
+setSheetsDocumentStore(getDocumentStoreRouter()!)
+setSlidesDocumentStore(getDocumentStoreRouter()!)
+setPdfDocumentStore(getDocumentStoreRouter()!)
+setMarkdownDocumentStore(getDocumentStoreRouter()!)
+setHtmlDocumentStore(getDocumentStoreRouter()!)
 // remote-routed documents have no local file behind their path: keep them out
-// of the path-keyed recents list (the home cloud view is their surface)
+// of the path-keyed recents lists (the home cloud view is their surface) —
+// docs' recents list is the home screen's source, slides keeps its own
+// File > Open Recent menu beside it
 setRecentPathFilter((path) => getDocumentStoreRouter()?.isCloudOnlyPath(path) === true)
+setSlidesRecentPathFilter((path) => getDocumentStoreRouter()?.isCloudOnlyPath(path) === true)
+
+/** The editor tab opener a cloud document kind opens in (Phase 7f). */
+function openCloudTabForKind(
+  manager: TabManager,
+  kind: string,
+): ((path: string, options?: { cloudId?: string; title?: string }) => void) | null {
+  switch (kind) {
+    case 'docx':
+      return (path, options) => manager.openDocsTab(path, options)
+    case 'xlsx':
+      return (path, options) => manager.openSheetsTab(path, options)
+    case 'pptx':
+      return (path, options) => manager.openSlidesTab(path, options)
+    case 'pdf':
+      return (path, options) => manager.openPdfTab(path, options)
+    case 'md':
+      return (path, options) => manager.openMarkdownTab(path, options)
+    case 'html':
+      return (path, options) => manager.openHtmlTab(path, options)
+    default:
+      // the router already answers unsupported kinds before a plan exists
+      return null
+  }
+}
 registerIntegrationsIpc({
   settingsPath: APP_SETTINGS_PATH,
   window: () => shellWindow,
