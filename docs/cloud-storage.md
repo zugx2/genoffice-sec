@@ -200,9 +200,13 @@ restrictions as a **per-file policy** instead. Shipped shape:
   stale menu item still cannot leak). Per editor:
   docs `export-pdf`/`export-html`/`save-merged-pdf`/`write-export-image`/
   `save-image-as`; pdf `extract-pages`/`split-pdf`/`merge-pdf`/
-  `merge-pages`/`export-images` plus the shell's docx/pptx/xlsx converters;
-  sheets `export-pdf`/`export-csv`; slides `export-images`/`export-pdf`;
-  markdown `export-pdf`/`export-docx` (dialog mode)/`save-image-as`;
+  `merge-pages`/`export-images`/redaction copy, plus the shell's
+  docx/pptx/xlsx converters and the shell's pdf Save As (its no-pending-edits
+  branch is a verbatim local copy); sheets `export-pdf`/`export-csv`; slides
+  `export-images`/`export-pdf` (destination dialogs refuse first, so they
+  never open for a cloud-only deck); markdown `export-pdf`/`export-docx`
+  (dialog AND open-in-Docs modes — the conversion-cache docx would open as an
+  ordinary ungated local Docs tab)/`save-image-as`;
   html `export-docx`/`export-pdf`/`export-html`. The shell injects one gate
   object into all six editors (`set<Editor>CloudGate`) built from the router
   predicate plus the registry's cached print policy; standalone apps
@@ -222,12 +226,14 @@ restrictions as a **per-file policy** instead. Shipped shape:
   print dialog (toolbar button and ⌘P included), markdown/html at the
   main-side print senders (their only menu-driven entry points), with the
   menu item disabled on deny everywhere.
-- **Not gated, deliberately:** saves and save-as (they upload in remote
-  mode); hybrid/local documents (an authoritative local copy already
-  exists); the markdown "Open in Docs" hand-off (writes the app-owned
-  markdown-conversions cache, not a user artifact); MCP save-to flows
-  (store-routed: in remote mode they mint new server documents, no local
-  file); screenshots and clipboard copies (out of scope, see below).
+- **Not gated, deliberately:** saves and save-as in the path-keyed editors
+  (docs/sheets/slides/markdown/html — in remote mode they upload; pdf's Save
+  As is the exception above: its clean-copy branch never uploaded, it
+  verbatim-copied, so pdf Save As is gated for cloud-only documents);
+  hybrid/local documents (an authoritative local copy already exists); MCP
+  save-to flows (store-routed: in remote mode they mint new server
+  documents, no local file); screenshots and clipboard copies (out of scope,
+  see below).
 
 **Honest limits — this is data governance, not DRM.** The policy is
 enforced by the shipped clients. A modified client, a user with raw API
@@ -235,9 +241,13 @@ access to their OWN data (`GET /documents/:id` is and must remain available
 to the owner's own signed-in client), or a screenshot/copy-paste bypasses
 all of it. There is no watermarking, no server-side kill switch, and no
 screenshot defense: the block removes the one-click "save a copy" paths and
-makes the restriction visible and owner-managed, nothing more. One residual
-is recorded for completeness: the shell's pdf Save As has a byte-identical
-clean-copy branch (`copyFileSync` when the tab has no pending edits) that
-lands a local file even for a scratch-backed tab — save-as is explicitly
-outside the ruling, and this branch is where its "it uploads" justification
-holds the least.
+makes the restriction visible and owner-managed, nothing more.
+
+One residual is recorded for completeness: in remote mode, a save-as (or
+`docs:save-to`, or a sheets MCP save) aimed at an EXISTING local path with
+no server association writes LOCALLY — the router resolves an existing
+unbound path through the local adapter
+(`document-store-router.ts` `resolve()`: a real file the server never saw
+stays local, even while a cloud mode is active). The bytes therefore land
+on disk without an upload; they do stay under the user's own account and
+machine, and a save to a NEW path mints a server document as intended.

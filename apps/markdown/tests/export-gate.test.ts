@@ -7,13 +7,12 @@ import type { DocumentStore } from '@genoffice/document-store'
 /**
  * Ruling 13 export gate (markdown): with the shell's cloud gate injected at
  * `setMarkdownCloudGate`, the export flows that write a NEW local file
- * (PDF export, DOCX export dialog mode, save-image-as) block with the typed
- * message before any dialog or byte write, the "open in Docs" hand-off
- * through the app-owned conversion cache stays deliberately ungated, a
- * local/hybrid document flows through unchanged, and the print sender honors
- * the per-file policy (markdown's print is renderer-driven, so the menu
- * sender is the enforcement point; the disabled menu item is the visible
- * half).
+ * (PDF export, DOCX export in both dialog and open-in-Docs modes,
+ * save-image-as) block with the typed message before any dialog or byte
+ * write, a local/hybrid document flows through unchanged, and the print
+ * sender honors the per-file policy (markdown's print is renderer-driven, so
+ * the menu sender is the enforcement point; the disabled menu item is the
+ * visible half).
  */
 
 type IpcHandler = (event: { sender: FakeWebContents }, ...args: unknown[]) => unknown
@@ -96,6 +95,7 @@ import {
   createMarkdownView,
   sendMarkdownPrintRequest,
   setMarkdownCloudGate,
+  setMarkdownDocxExportedHook,
   setMarkdownDocumentStore,
 } from '../src/main/markdown-main'
 import { MARKDOWN_CHANNELS } from '../src/shared/ipc'
@@ -156,7 +156,7 @@ describe('markdown export gate (Ruling 13)', () => {
     expect(showSaveDialogWithMemory).not.toHaveBeenCalled()
   })
 
-  it('blocks the DOCX export dialog mode; the open-in-Docs cache hand-off stays open', async () => {
+  it('blocks the DOCX export dialog mode with the typed message', async () => {
     const { contents } = openDoc('cloud-only-notes.md')
 
     const dialog = await handlers.get(MARKDOWN_CHANNELS.exportDocx)?.(
@@ -165,9 +165,14 @@ describe('markdown export gate (Ruling 13)', () => {
     )
     expect(dialog).toMatchObject({ ok: false, error: 'blocked:export-blocked' })
     expect(showSaveDialogWithMemory).not.toHaveBeenCalled()
+    expect(showMessageBox).toHaveBeenCalled()
+  })
 
-    // an inter-editor hand-off through the app-owned conversion cache is not
-    // a user export — deliberately not gated (documented in cloud-storage.md)
+  it('blocks the open-in-Docs hand-off too (the cache docx would open as an ungated local Docs tab)', async () => {
+    const { contents } = openDoc('cloud-only-notes.md')
+    const docxExported = vi.fn()
+    setMarkdownDocxExportedHook(docxExported)
+
     const openInDocs = await handlers.get(MARKDOWN_CHANNELS.exportDocx)?.(
       { sender: contents },
       {
@@ -176,7 +181,13 @@ describe('markdown export gate (Ruling 13)', () => {
         mode: 'openInDocs',
       },
     )
-    expect(openInDocs).toMatchObject({ ok: true })
+
+    // typed block, surfaced natively (the renderer only logs export failures)
+    expect(openInDocs).toMatchObject({ ok: false, error: 'blocked:export-blocked' })
+    expect(showMessageBox).toHaveBeenCalled()
+    // the shell hook that routes the conversion into a docs tab never fires —
+    // no conversion file was written, so nothing can launder into a local tab
+    expect(docxExported).not.toHaveBeenCalled()
   })
 
   it('blocks save-image-as (an embedded image is document content)', async () => {

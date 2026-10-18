@@ -33,6 +33,8 @@ interface FakeWebContents {
 const handlers = vi.hoisted(() => new Map<string, IpcHandler>())
 const webContents: FakeWebContents[] = []
 const buildFromTemplate = vi.hoisted(() => vi.fn((_template: unknown) => []))
+const showOpenDialogWithMemory = vi.hoisted(() => vi.fn())
+const showSaveDialogWithMemory = vi.hoisted(() => vi.fn())
 let nextWebContentsId = 1
 
 function makeWebContents(): FakeWebContents {
@@ -93,8 +95,8 @@ vi.mock('@genoffice/electron-utils', () => ({
   isHeadlessMode: vi.fn(() => false),
   rendererUrl: vi.fn(() => 'genoffice-app://slides/index.html'),
   safeExternalUrl: vi.fn(() => null),
-  showOpenDialogWithMemory: vi.fn(),
-  showSaveDialogWithMemory: vi.fn(),
+  showOpenDialogWithMemory,
+  showSaveDialogWithMemory,
   appMenuLabels: vi.fn(() => ({})),
   toggleDevToolsItem: vi.fn(() => ({})),
   viewMenuTemplate: vi.fn(() => []),
@@ -136,6 +138,8 @@ const gate = {
 
 beforeEach(() => {
   buildFromTemplate.mockClear()
+  showOpenDialogWithMemory.mockClear()
+  showSaveDialogWithMemory.mockClear()
   setSlidesCloudGate(gate)
   setSlidesDocumentStore({
     forgetOwner: vi.fn(),
@@ -229,6 +233,31 @@ describe('slides export gate (Ruling 13)', () => {
     // past the gate: the write itself hits the (unimplemented) fs of the
     // harness — the assertion is that the block never fired
     expect(result).not.toMatchObject({ reason: 'export-blocked' })
+  })
+
+  it('never opens the export destination dialogs for a cloud-only deck (null pick, no dialog)', async () => {
+    const contents = openCloudDeck('cloud-only-deck.pptx')
+
+    expect(await handlers.get('slides:pick-export-dir')?.({ sender: contents })).toBeNull()
+    expect(
+      await handlers.get('slides:pick-export-pdf-path')?.({ sender: contents }, 'deck.pdf'),
+    ).toBeNull()
+    // the gate answered before either dialog could open
+    expect(showOpenDialogWithMemory).not.toHaveBeenCalled()
+    expect(showSaveDialogWithMemory).not.toHaveBeenCalled()
+  })
+
+  it('opens the destination dialogs for an ordinary local deck', async () => {
+    const local = openLocalDeck('deck.pptx')
+    showOpenDialogWithMemory.mockResolvedValue({ canceled: true })
+    showSaveDialogWithMemory.mockResolvedValue({ canceled: true })
+
+    expect(await handlers.get('slides:pick-export-dir')?.({ sender: local })).toBeNull()
+    expect(showOpenDialogWithMemory).toHaveBeenCalled()
+    expect(
+      await handlers.get('slides:pick-export-pdf-path')?.({ sender: local }, 'deck.pdf'),
+    ).toBeNull()
+    expect(showSaveDialogWithMemory).toHaveBeenCalled()
   })
 })
 

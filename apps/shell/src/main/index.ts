@@ -4047,6 +4047,7 @@ function buildPdfMenu(): void {
         {
           label: tm('menuSaveAs'),
           accelerator: 'CmdOrCtrl+Shift+S',
+          enabled: !pdfTabExportBlocked(), // Ruling 13: cloud-only → no local Save As copy
           click: () => void savePdfAs(),
         },
         { type: 'separator' },
@@ -4306,6 +4307,17 @@ let savingPdfAs = false
 async function savePdfAs(): Promise<void> {
   const tab = tabManager?.activePdfTab()
   if (!tab?.filePath || !shellWindow || savingPdfAs) return
+  // Ruling 13: the open document is cloud-only → Save As refuses outright.
+  // Its no-pending-edits branch is a verbatim `copyFileSync` of the source
+  // bytes to a local file — an ungated export; the dirty branch does upload
+  // through the store, but with the menu item disabled the whole flow is
+  // withheld for cloud-only documents (same two-layer treatment as the
+  // converter exports: the disabled item is the visible half, this check the
+  // enforcement half against a stale menu).
+  if (pdfTabExportBlocked()) {
+    await refuseBlockedExport()
+    return
+  }
   savingPdfAs = true
   // Pause renderer autosave for the whole flow: the dialog blurs the window, and a
   // blur-triggered autosave would write the pending edits into the original file
@@ -4966,8 +4978,8 @@ setHtmlCloudGate(cloudDocumentGate)
 /**
  * The ACTIVE pdf tab holds a cloud-only document → every export of it to a
  * new local file is flat-blocked (Ruling 13). Covers the three shell-driven
- * converter exports (docx/pptx/xlsx); the Save As menu item stays usable
- * (saves are not gated — in remote mode a save-as uploads).
+ * converter exports (docx/pptx/xlsx) and the Save As flow (its clean-copy
+ * branch writes a verbatim local file); ordinary saves stay ungated.
  */
 function pdfTabExportBlocked(): boolean {
   return tabExportBlocked(activePdfPath)

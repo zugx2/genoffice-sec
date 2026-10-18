@@ -4325,7 +4325,10 @@ export function registerSlidesIpc(): void {
 
   // ── Export (PDF / images): the renderer renders hi-res PNGs with offscreen Konva; the main process handles dialogs/writing ──
 
-  ipcMain.handle('slides:pick-export-dir', async () => {
+  ipcMain.handle('slides:pick-export-dir', async (e) => {
+    // Ruling 13: a cloud-only deck cannot be exported — refuse before the
+    // dialog so it never even opens (the renderer aborts on a null pick)
+    if (isCloudOnlyDeck(e.sender.id)) return null
     const parent = dialogParent()
     const options = {
       title: tm('dlgPickExportDir'),
@@ -4359,7 +4362,10 @@ export function registerSlidesIpc(): void {
     },
   )
 
-  ipcMain.handle('slides:pick-export-pdf-path', async (_e, defaultName: string) => {
+  ipcMain.handle('slides:pick-export-pdf-path', async (e, defaultName: string) => {
+    // Ruling 13: a cloud-only deck cannot be exported — refuse before the
+    // dialog so it never even opens (the renderer aborts on a null pick)
+    if (isCloudOnlyDeck(e.sender.id)) return null
     const parent = dialogParent()
     const options = {
       title: tm('dlgExportPdf'),

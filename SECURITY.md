@@ -159,7 +159,9 @@ remove the shipped apps' one-click local-copy paths for cloud-only
 documents and make printing restrictions visible and owner-managed; they
 make no stronger claim. Local and hybrid documents are deliberately
 unaffected (an authoritative local copy already exists), and saves/save-as
-are deliberately ungated (they upload to the owner's own account).
+are deliberately ungated (they upload to the owner's own account) — pdf's
+Save As and redaction copy being the exception, gated for cloud-only
+documents since their clean-copy branches never uploaded.
 
 ## Out of Scope
 

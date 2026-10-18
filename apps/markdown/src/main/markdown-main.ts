@@ -1013,12 +1013,22 @@ function registerMarkdownIpc(): void {
           .trim() || tm('untitledFile')
       try {
         const bytes = Buffer.from(request.base64, 'base64')
+        // Ruling 13: cloud-only documents cannot be exported — the open-in-Docs
+        // hand-off included. Its conversion-cache docx is a full copy of the
+        // document, and the shell opens it as an ordinary (ungated) local Docs
+        // tab, so the hand-off launders the export; block both modes here,
+        // before any byte is written.
+        if (isCloudOnlyDoc(e.sender.id)) {
+          await warnGateBlocked(e, 'export-blocked')
+          return {
+            ok: false,
+            error: cloudGate?.blockedMessage('export-blocked') ?? 'export-blocked',
+          }
+        }
         if (request.mode === 'openInDocs') {
           // Each conversion gets an app-owned cache file. A marked session is
           // retained for the life of open Docs tabs; crash leftovers expire
           // after the explicit TTL enforced when the next session starts.
-          // (Ruling 13: an inter-editor hand-off through the app-owned cache,
-          // not a user export — deliberately not gated.)
           const target = await writeMarkdownConversion(
             await markdownConversionSession(),
             safeName,
@@ -1026,14 +1036,6 @@ function registerMarkdownIpc(): void {
           )
           docxExportedHook?.(target)
           return { ok: true, path: target }
-        }
-        // Ruling 13: cloud-only documents cannot be exported
-        if (isCloudOnlyDoc(e.sender.id)) {
-          await warnGateBlocked(e, 'export-blocked')
-          return {
-            ok: false,
-            error: cloudGate?.blockedMessage('export-blocked') ?? 'export-blocked',
-          }
         }
         const win =
           BrowserWindow.fromWebContents(e.sender) ?? BrowserWindow.getFocusedWindow() ?? undefined

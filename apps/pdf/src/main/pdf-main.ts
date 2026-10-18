@@ -670,6 +670,27 @@ function exportBlocked(): { ok: false; error: string; reason: 'export-blocked' }
   }
 }
 
+/**
+ * Native typed-block warning for flows whose contract carries no error field
+ * (the redaction copy handler answers a bare boolean), mirroring markdown's
+ * `warnGateBlocked`: without it the block would be a silent `false`.
+ */
+async function warnGateBlocked(
+  e: Electron.IpcMainInvokeEvent,
+  reason: 'export-blocked' | 'print-blocked',
+): Promise<void> {
+  if (!cloudGate) return
+  const win = BrowserWindow.fromWebContents(e.sender) ?? BrowserWindow.getFocusedWindow()
+  const options = {
+    type: 'warning' as const,
+    message: cloudGate.blockedMessage(reason),
+    buttons: [tm('btnCancel')],
+    noLink: true,
+  }
+  if (win && !win.isDestroyed()) await dialog.showMessageBox(win, options)
+  else await dialog.showMessageBox(options)
+}
+
 /** Print verdict at invocation: true when the per-file policy denies printing. */
 function printDenied(wcId: number): boolean {
   const path = openPathByWc.get(wcId)
@@ -1061,6 +1082,13 @@ function registerPdfIpc(): void {
 
   ipcMain.handle(PDF_CHANNELS.requestRedactionCopy, async (e, path: unknown): Promise<boolean> => {
     if (typeof path !== 'string' || !allowedByWc.get(e.sender.id)?.has(path)) return false
+    // Ruling 13: a redaction copy hands a cloud-only document's bytes to a
+    // NEW local file (same shape as the shell's Save As copy) — block before
+    // the dialog, with the typed message surfaced natively
+    if (isCloudOnlyDoc(e.sender.id)) {
+      await warnGateBlocked(e, 'export-blocked')
+      return false
+    }
     const base = basename(path).replace(/\.pdf$/i, '')
     setPdfSaveAsInFlight(e.sender, true)
     try {

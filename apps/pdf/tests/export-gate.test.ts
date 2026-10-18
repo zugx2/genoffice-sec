@@ -9,9 +9,11 @@ import type { DocumentStore } from '@genoffice/document-store'
  * cloud gate injected at `setPdfCloudGate`, every flow that writes the open
  * document's derived bytes to a NEW local file answers the typed
  * `export-blocked` before any dialog opens and before a single byte leaves —
- * extract/split/merge/merge-pages (new PDFs) and export-images (page PNGs) —
- * while a local/hybrid document flows through unchanged, and printing honors
- * the per-file print policy at invocation time (`pdf:print-gate`).
+ * extract/split/merge/merge-pages (new PDFs), export-images (page PNGs), and
+ * the redaction copy (whose native warning stands in for the typed error its
+ * boolean contract cannot carry) — while a local/hybrid document flows
+ * through unchanged, and printing honors the per-file print policy at
+ * invocation time (`pdf:print-gate`).
  */
 
 type IpcHandler = (event: { sender: FakeWebContents }, ...args: unknown[]) => unknown
@@ -29,7 +31,9 @@ interface FakeWebContents {
 
 const handlers = new Map<string, IpcHandler>()
 const webContents: FakeWebContents[] = []
+const showMessageBox = vi.hoisted(() => vi.fn(async () => ({ response: 0 })))
 const showOpenDialog = vi.hoisted(() => vi.fn())
+const showSaveDialog = vi.hoisted(() => vi.fn())
 let nextWebContentsId = 1
 
 function makeWebContents(): FakeWebContents {
@@ -63,7 +67,7 @@ vi.mock('electron', () => ({
       return null
     }
   },
-  dialog: { showMessageBox: vi.fn(), showOpenDialog, showSaveDialog: vi.fn() },
+  dialog: { showMessageBox, showOpenDialog, showSaveDialog },
   ipcMain: {
     handle: vi.fn((channel: string, handler: IpcHandler) => handlers.set(channel, handler)),
     on: vi.fn((channel: string, handler: IpcHandler) => handlers.set(channel, handler)),
@@ -125,6 +129,8 @@ async function openDoc(name: string): Promise<{ path: string; contents: FakeWebC
 beforeEach(async () => {
   directory = await mkdtemp(join(tmpdir(), 'pdf-export-gate-'))
   showOpenDialog.mockReset()
+  showSaveDialog.mockReset()
+  showMessageBox.mockClear()
   setPdfCloudGate(gate)
 })
 
@@ -186,6 +192,30 @@ describe('pdf export gate (Ruling 13)', () => {
 
     expect(result).toMatchObject({ ok: false, reason: 'export-blocked' })
     expect(showOpenDialog).not.toHaveBeenCalled()
+  })
+
+  it('blocks the redaction copy of a cloud-only document before its save dialog', async () => {
+    const { path, contents } = await openDoc('cloud-only-redact.pdf')
+
+    const ok = await handlers.get(PDF_CHANNELS.requestRedactionCopy)?.({ sender: contents }, path)
+
+    // the handler's contract is a bare boolean, so the typed block surfaces
+    // as the native warning (same as markdown's gated flows)
+    expect(ok).toBe(false)
+    expect(showMessageBox).toHaveBeenCalled()
+    expect(showSaveDialog).not.toHaveBeenCalled()
+  })
+
+  it('lets a local document open the redaction-copy save dialog (unaffected)', async () => {
+    const { path, contents } = await openDoc('local-redact-copy.pdf')
+    showSaveDialog.mockResolvedValue({ canceled: true })
+
+    const ok = await handlers.get(PDF_CHANNELS.requestRedactionCopy)?.({ sender: contents }, path)
+
+    // the dialog opened (canceled → false); the gate never fired
+    expect(ok).toBe(false)
+    expect(showSaveDialog).toHaveBeenCalled()
+    expect(showMessageBox).not.toHaveBeenCalled()
   })
 
   it('lets a local/hybrid document extract unchanged (the gate only knows cloud-only)', async () => {
