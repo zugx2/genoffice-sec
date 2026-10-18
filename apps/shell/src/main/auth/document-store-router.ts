@@ -573,6 +573,26 @@ export class DocumentStoreRouter implements DocumentStore {
     return this.docs.get(path)?.store === this.remoteStore
   }
 
+  /**
+   * The cached per-file print policy (Ruling 13) of the cloud document bound
+   * to `path` — `'allow'` when the path is not cloud-only, has no registry
+   * entry, or the entry predates the field. Read at enforcement time (print
+   * invocation, menu build), never captured at open, so an owner's toggle
+   * applies to an already-open tab. Best-effort fresh: a rate-limited
+   * background refresh is kicked fire-and-forget, so a stale cache converges
+   * within the registry's auto-refresh window without ever blocking the
+   * caller on the network.
+   */
+  printPolicyForPath(path: string): 'allow' | 'deny' {
+    if (!this.isCloudOnlyPath(path)) return 'allow'
+    const cloudId = this.docs.get(path)?.ref.cloudId ?? this.associations.get(path)
+    if (cloudId === undefined) return 'allow'
+    void this.registry()
+      ?.autoRefresh()
+      .catch(() => {})
+    return this.registry()?.document(cloudId)?.printPolicy ?? 'allow'
+  }
+
   // ── open-from-cloud (the home cloud view's row click) ─────────────────
 
   /**

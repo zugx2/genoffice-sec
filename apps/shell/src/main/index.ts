@@ -143,6 +143,7 @@ import {
   setDocsShellWindow,
   setDocsFileSavedHook,
   setDocsFileOpenedHook,
+  setDocsCloudGate,
   setSessionPathResolver,
   defaultSaveDir,
   uniquePathIn,
@@ -185,6 +186,7 @@ import {
   setSheetsCloseTabHook,
   setSheetsDocumentStore,
   setSheetsExtraFileMenuItems,
+  setSheetsCloudGate,
   setSheetsShellWindow,
   setSheetsWorkbookOpenedHook,
   startSheetsCaptureServer,
@@ -204,6 +206,7 @@ import {
   setSlidesRecentPathFilter,
   setSlidesShellWindow,
   setSlidesShowBleed,
+  setSlidesCloudGate,
   slidesFileRenamed,
 } from '../../../slides/src/main/slides-main'
 import {
@@ -218,6 +221,7 @@ import {
   setPdfDocumentStore,
   setPdfRenamedHook,
   setPdfSaveAsInFlight,
+  setPdfCloudGate,
 } from '../../../pdf/src/main/pdf-main'
 import { PDF_CHANNELS } from '../../../pdf/src/shared/ipc'
 import { convertPdfFileToDocxLocalWithPrompt, PdfLoadError } from './pdf2docx-local'
@@ -238,6 +242,7 @@ import {
   setMarkdownDocumentStore,
   setMarkdownDocxExportedHook,
   setMarkdownFileSavedHook,
+  setMarkdownCloudGate,
 } from '../../../markdown/src/main/markdown-main'
 import {
   configureHtmlRuntime,
@@ -254,6 +259,7 @@ import {
   setHtmlDocxExportPrepareHook,
   setHtmlDocxExportedHook,
   setHtmlDocumentStore,
+  setHtmlCloudGate,
   setHtmlFileSavedHook,
   setHtmlPresentHooks,
   setHtmlProvisionalTitleHook,
@@ -677,6 +683,8 @@ const tMain = createI18n({
     errMissing: '文件不存在',
     errExists: '同名文件已存在',
     errRenameFailed: '重命名失败',
+    errExportBlocked: '云端文档不允许导出。',
+    errPrintBlocked: '该文档的打印策略禁止打印。',
     errNewTabFailed: '新建文档失败',
     errUnsupportedExt: '暂不支持 .{ext} 类型',
     copySuffix: '副本',
@@ -758,6 +766,8 @@ const tMain = createI18n({
     errMissing: 'File not found',
     errExists: 'A file with that name already exists',
     errRenameFailed: 'Rename failed',
+    errExportBlocked: 'Cloud-only documents cannot be exported.',
+    errPrintBlocked: 'Printing is blocked for this document by its print policy.',
     errNewTabFailed: 'Could not create the new document',
     errUnsupportedExt: '.{ext} files are not supported',
     copySuffix: 'copy',
@@ -847,6 +857,8 @@ const tMain = createI18n({
     errMissing: 'ファイルが見つかりません',
     errExists: '同名のファイルが既に存在します',
     errRenameFailed: '名前の変更に失敗しました',
+    errExportBlocked: 'クラウド専用ドキュメントはエクスポートできません。',
+    errPrintBlocked: 'このドキュメントの印刷ポリシーにより印刷は禁止されています。',
     errNewTabFailed: '新規ドキュメントを作成できませんでした',
     errUnsupportedExt: '.{ext} 形式には対応していません',
     copySuffix: 'コピー',
@@ -936,6 +948,8 @@ const tMain = createI18n({
     errMissing: '파일을 찾을 수 없습니다',
     errExists: '같은 이름의 파일이 이미 있습니다',
     errRenameFailed: '이름 바꾸기에 실패했습니다',
+    errExportBlocked: '클라우드 전용 문서는 내보낼 수 없습니다.',
+    errPrintBlocked: '이 문서의 인쇄 정책에 따라 인쇄가 차단되었습니다.',
     errNewTabFailed: '새 문서를 만들지 못했습니다',
     errUnsupportedExt: '.{ext} 형식은 지원되지 않습니다',
     copySuffix: '복사본',
@@ -1024,6 +1038,8 @@ const tMain = createI18n({
     errMissing: 'Fichier introuvable',
     errExists: 'Un fichier du même nom existe déjà',
     errRenameFailed: 'Échec du renommage',
+    errExportBlocked: 'Les documents réservés au cloud ne peuvent pas être exportés.',
+    errPrintBlocked: "L'impression de ce document est bloquée par sa politique d'impression.",
     errNewTabFailed: 'Impossible de créer le nouveau document',
     errUnsupportedExt: 'les fichiers .{ext} ne sont pas pris en charge',
     copySuffix: 'copie',
@@ -1114,6 +1130,8 @@ const tMain = createI18n({
     errMissing: 'Datei nicht gefunden',
     errExists: 'Eine Datei mit diesem Namen existiert bereits',
     errRenameFailed: 'Umbenennen fehlgeschlagen',
+    errExportBlocked: 'Cloud-only-Dokumente können nicht exportiert werden.',
+    errPrintBlocked: 'Das Drucken dieses Dokuments ist durch seine Druckrichtlinie gesperrt.',
     errNewTabFailed: 'Neues Dokument konnte nicht erstellt werden',
     errUnsupportedExt: '.{ext}-Dateien werden nicht unterstützt',
     copySuffix: 'Kopie',
@@ -1204,6 +1222,8 @@ const tMain = createI18n({
     errMissing: 'Archivo no encontrado',
     errExists: 'Ya existe un archivo con ese nombre',
     errRenameFailed: 'No se pudo cambiar el nombre',
+    errExportBlocked: 'Los documentos solo en la nube no se pueden exportar.',
+    errPrintBlocked: 'La impresión de este documento está bloqueada por su política de impresión.',
     errNewTabFailed: 'No se pudo crear el nuevo documento',
     errUnsupportedExt: 'los archivos .{ext} no son compatibles',
     copySuffix: 'copia',
@@ -1294,6 +1314,8 @@ const tMain = createI18n({
     errMissing: 'ไม่พบไฟล์',
     errExists: 'มีไฟล์ชื่อเดียวกันอยู่แล้ว',
     errRenameFailed: 'เปลี่ยนชื่อไม่สำเร็จ',
+    errExportBlocked: 'เอกสารที่อยู่บนคลาวด์เท่านั้นไม่สามารถส่งออกได้',
+    errPrintBlocked: 'การพิมพ์เอกสารนี้ถูกบล็อกตามนโยบายการพิมพ์',
     errNewTabFailed: 'สร้างเอกสารใหม่ไม่สำเร็จ',
     errUnsupportedExt: 'ไม่รองรับไฟล์ .{ext}',
     copySuffix: 'สำเนา',
@@ -1380,6 +1402,8 @@ const tMain = createI18n({
     errMissing: 'File tidak ditemukan',
     errExists: 'File dengan nama tersebut sudah ada',
     errRenameFailed: 'Gagal mengganti nama',
+    errExportBlocked: 'Dokumen khusus awan tidak dapat diekspor.',
+    errPrintBlocked: 'Pencetakan dokumen ini diblokir oleh kebijakan cetaknya.',
     errNewTabFailed: 'Gagal membuat dokumen baru',
     errUnsupportedExt: 'file .{ext} tidak didukung',
     copySuffix: 'salinan',
@@ -1470,6 +1494,8 @@ const tMain = createI18n({
     errMissing: 'Файл не найден',
     errExists: 'Файл с таким именем уже существует',
     errRenameFailed: 'Не удалось переименовать',
+    errExportBlocked: 'Документы только в облаке нельзя экспортировать.',
+    errPrintBlocked: 'Печать этого документа заблокирована его политикой печати.',
     errNewTabFailed: 'Не удалось создать новый документ',
     errUnsupportedExt: 'файлы .{ext} не поддерживаются',
     copySuffix: 'копия',
@@ -1560,6 +1586,8 @@ const tMain = createI18n({
     errMissing: 'الملف غير موجود',
     errExists: 'يوجد ملف بالاسم نفسه بالفعل',
     errRenameFailed: 'فشلت إعادة التسمية',
+    errExportBlocked: 'لا يمكن تصدير المستندات السحابية فقط.',
+    errPrintBlocked: 'تم حظر طباعة هذا المستند بموجب سياسة الطباعة الخاصة به.',
     errNewTabFailed: 'تعذّر إنشاء المستند الجديد',
     errUnsupportedExt: 'ملفات .{ext} غير مدعومة',
     copySuffix: 'نسخة',
@@ -1646,6 +1674,8 @@ const tMain = createI18n({
     errMissing: 'Arquivo não encontrado',
     errExists: 'Já existe um arquivo com esse nome',
     errRenameFailed: 'Falha ao renomear',
+    errExportBlocked: 'Documentos somente na nuvem não podem ser exportados.',
+    errPrintBlocked: 'A impressão deste documento está bloqueada pela política de impressão.',
     errNewTabFailed: 'Falha ao criar o novo documento',
     errUnsupportedExt: 'arquivos .{ext} não são suportados',
     copySuffix: 'cópia',
@@ -1736,6 +1766,8 @@ const tMain = createI18n({
     errMissing: 'File non trovato',
     errExists: 'Esiste già un file con questo nome',
     errRenameFailed: 'Impossibile rinominare',
+    errExportBlocked: 'I documenti solo su cloud non possono essere esportati.',
+    errPrintBlocked: 'La stampa di questo documento è bloccata dalla sua politica di stampa.',
     errNewTabFailed: 'Impossibile creare il nuovo documento',
     errUnsupportedExt: 'i file .{ext} non sono supportati',
     copySuffix: 'copia',
@@ -1826,6 +1858,8 @@ const tMain = createI18n({
     errMissing: 'Nie znaleziono pliku',
     errExists: 'Plik o tej nazwie już istnieje',
     errRenameFailed: 'Nie udało się zmienić nazwy',
+    errExportBlocked: 'Dokumentów wyłącznie w chmurze nie można eksportować.',
+    errPrintBlocked: 'Drukowanie tego dokumentu jest zablokowane przez jego zasady drukowania.',
     errNewTabFailed: 'Nie udało się utworzyć nowego dokumentu',
     errUnsupportedExt: 'pliki .{ext} nie są obsługiwane',
     copySuffix: 'kopia',
@@ -1916,6 +1950,8 @@ const tMain = createI18n({
     errMissing: 'Soubor nebyl nalezen',
     errExists: 'Soubor s tímto názvem už existuje',
     errRenameFailed: 'Přejmenování se nezdařilo',
+    errExportBlocked: 'Dokumenty pouze v cloudu nelze exportovat.',
+    errPrintBlocked: 'Tisk tohoto dokumentu je zablokován jeho zásadami tisku.',
     errNewTabFailed: 'Nový dokument se nepodařilo vytvořit',
     errUnsupportedExt: 'Soubory .{ext} nejsou podporovány',
     copySuffix: 'kopie',
@@ -2004,6 +2040,8 @@ const tMain = createI18n({
     errMissing: 'Bestand niet gevonden',
     errExists: 'Er bestaat al een bestand met die naam',
     errRenameFailed: 'Naam wijzigen mislukt',
+    errExportBlocked: 'Documenten die alleen in de cloud staan kunnen niet worden geëxporteerd.',
+    errPrintBlocked: 'Het afdrukken van dit document is geblokkeerd door het afdrukbeleid.',
     errNewTabFailed: 'Kan het nieuwe document niet maken',
     errUnsupportedExt: '.{ext}-bestanden worden niet ondersteund',
     copySuffix: 'kopie',
@@ -2094,6 +2132,8 @@ const tMain = createI18n({
     errMissing: 'Fail tidak ditemui',
     errExists: 'Fail dengan nama yang sama sudah wujud',
     errRenameFailed: 'Gagal menamakan semula',
+    errExportBlocked: 'Dokumen awan sahaja tidak boleh dieksport.',
+    errPrintBlocked: 'Pencetakan dokumen ini disekat oleh dasar cetaknya.',
     errNewTabFailed: 'Gagal mencipta dokumen baharu',
     errUnsupportedExt: 'fail .{ext} tidak disokong',
     copySuffix: 'salinan',
@@ -2183,6 +2223,8 @@ const tMain = createI18n({
     errMissing: 'הקובץ לא נמצא',
     errExists: 'כבר קיים קובץ באותו שם',
     errRenameFailed: 'שינוי השם נכשל',
+    errExportBlocked: 'לא ניתן לייצא מסמכים הזמינים בענן בלבד.',
+    errPrintBlocked: 'הדפסת מסמך זה חסומה על ידי מדיניות ההדפסה שלו.',
     errNewTabFailed: 'יצירת המסמך החדש נכשלה',
     errUnsupportedExt: 'קובצי .{ext} אינם נתמכים',
     copySuffix: 'עותק',
@@ -2270,6 +2312,8 @@ const tMain = createI18n({
     errMissing: 'फ़ाइल नहीं मिली',
     errExists: 'इस नाम की फ़ाइल पहले से मौजूद है',
     errRenameFailed: 'नाम बदलने में विफल',
+    errExportBlocked: 'केवल-क्लाउड दस्तावेज़ निर्यात नहीं किए जा सकते।',
+    errPrintBlocked: 'इस दस्तावेज़ की प्रिंट नीति द्वारा इसका प्रिंट अवरुद्ध है।',
     errNewTabFailed: 'नया दस्तावेज़ बनाने में विफल',
     errUnsupportedExt: '.{ext} फ़ाइलें समर्थित नहीं हैं',
     copySuffix: 'प्रतिलिपि',
@@ -2360,6 +2404,8 @@ const tMain = createI18n({
     errMissing: '檔案不存在',
     errExists: '同名檔案已存在',
     errRenameFailed: '重新命名失敗',
+    errExportBlocked: '雲端文件不允許匯出。',
+    errPrintBlocked: '該文件的列印原則禁止列印。',
     errNewTabFailed: '新建文件失敗',
     errUnsupportedExt: '暫不支援 .{ext} 類型',
     copySuffix: '副本',
@@ -4007,22 +4053,26 @@ function buildPdfMenu(): void {
         // local pdf2docx (P4): in-process PDFium wasm, no cloud counterpart
         {
           label: tm('menuExportDocx'),
+          enabled: !pdfTabExportBlocked(), // Ruling 13: cloud-only → no export
           click: () => void exportPdfAsDocxLocal(),
         },
         // local pdf2pptx (P25): one slide per page, no cloud counterpart
         {
           label: tm('menuExportPptx'),
+          enabled: !pdfTabExportBlocked(),
           click: () => void exportPdfAsPptxLocal(),
         },
         // local pdf2xlsx (P26): one worksheet per page, no cloud counterpart
         {
           label: tm('menuExportXlsx'),
+          enabled: !pdfTabExportBlocked(),
           click: () => void exportPdfAsXlsxLocal(),
         },
         { type: 'separator' },
         {
           label: tm('menuPrint'),
           accelerator: 'CmdOrCtrl+P',
+          enabled: !pdfTabPrintBlocked(), // Ruling 13: per-file print policy
           click: () => {
             const tab = tabManager?.activePdfTab()
             if (tab) sendPdfPrintRequest(tab.webContents)
@@ -4092,6 +4142,7 @@ function buildMarkdownMenu(): void {
         { type: 'separator' },
         {
           label: tm('menuExportDocx'),
+          enabled: !tabExportBlocked(activeMarkdownPath), // Ruling 13: cloud-only → no export
           click: () => {
             const tab = tabManager?.activeMarkdownTab()
             if (tab) sendMarkdownExportRequest(tab.webContents, 'docx')
@@ -4099,6 +4150,7 @@ function buildMarkdownMenu(): void {
         },
         {
           label: tm('menuExportPdf'),
+          enabled: !tabExportBlocked(activeMarkdownPath),
           click: () => {
             const tab = tabManager?.activeMarkdownTab()
             if (tab) sendMarkdownExportRequest(tab.webContents, 'pdf')
@@ -4115,6 +4167,7 @@ function buildMarkdownMenu(): void {
         {
           label: tm('menuPrint'),
           accelerator: 'CmdOrCtrl+P',
+          enabled: !tabPrintBlocked(activeMarkdownPath), // Ruling 13: per-file print policy
           click: () => {
             const tab = tabManager?.activeMarkdownTab()
             if (tab) sendMarkdownPrintRequest(tab.webContents)
@@ -4184,6 +4237,7 @@ function buildHtmlMenu(): void {
         { type: 'separator' },
         {
           label: tm('menuExportDocx'),
+          enabled: !tabExportBlocked(activeHtmlPath), // Ruling 13: cloud-only → no export
           click: () => {
             const tab = tabManager?.activeHtmlTab()
             if (tab) sendHtmlExportRequest(tab.webContents, 'docx')
@@ -4191,6 +4245,7 @@ function buildHtmlMenu(): void {
         },
         {
           label: tm('menuExportPdf'),
+          enabled: !tabExportBlocked(activeHtmlPath),
           click: () => {
             const tab = tabManager?.activeHtmlTab()
             if (tab) sendHtmlExportRequest(tab.webContents, 'pdf')
@@ -4198,6 +4253,7 @@ function buildHtmlMenu(): void {
         },
         {
           label: tm('menuExportHtml'),
+          enabled: !tabExportBlocked(activeHtmlPath),
           click: () => {
             const tab = tabManager?.activeHtmlTab()
             if (tab) sendHtmlExportRequest(tab.webContents, 'html')
@@ -4207,6 +4263,7 @@ function buildHtmlMenu(): void {
         {
           label: tm('menuPrint'),
           accelerator: 'CmdOrCtrl+P',
+          enabled: !tabPrintBlocked(activeHtmlPath), // Ruling 13: per-file print policy
           click: () => {
             const tab = tabManager?.activeHtmlTab()
             if (tab) sendHtmlPrintRequest(tab.webContents)
@@ -4288,6 +4345,11 @@ let exportingPdfDocx = false
 async function exportPdfAsDocxLocal(): Promise<void> {
   const tab = tabManager?.activePdfTab()
   if (!tab?.filePath || !shellWindow) return
+  // Ruling 13: the open document is cloud-only → its conversion is an export
+  if (pdfTabExportBlocked()) {
+    await refuseBlockedExport()
+    return
+  }
   if (exportingPdfDocx) {
     void dialog.showMessageBox(shellWindow, {
       type: 'info',
@@ -4427,6 +4489,11 @@ async function exportPdfAsDocxLocal(): Promise<void> {
 async function exportPdfAsPptxLocal(): Promise<void> {
   const tab = tabManager?.activePdfTab()
   if (!tab?.filePath || !shellWindow) return
+  // Ruling 13: cloud-only → its conversion is an export
+  if (pdfTabExportBlocked()) {
+    await refuseBlockedExport()
+    return
+  }
   if (exportingPdfDocx) {
     void dialog.showMessageBox(shellWindow, {
       type: 'info',
@@ -4537,6 +4604,11 @@ async function exportPdfAsPptxLocal(): Promise<void> {
 async function exportPdfAsXlsxLocal(): Promise<void> {
   const tab = tabManager?.activePdfTab()
   if (!tab?.filePath || !shellWindow) return
+  // Ruling 13: cloud-only → its conversion is an export
+  if (pdfTabExportBlocked()) {
+    await refuseBlockedExport()
+    return
+  }
   if (exportingPdfDocx) {
     void dialog.showMessageBox(shellWindow, {
       type: 'info',
@@ -4869,6 +4941,74 @@ setHtmlDocumentStore(getDocumentStoreRouter()!)
 // File > Open Recent menu beside it
 setRecentPathFilter((path) => getDocumentStoreRouter()?.isCloudOnlyPath(path) === true)
 setSlidesRecentPathFilter((path) => getDocumentStoreRouter()?.isCloudOnlyPath(path) === true)
+
+// ── Ruling 13: cloud-file export block + per-file print policy ──────────
+// One gate object injected into every editor main. The classifier is the
+// router's `isCloudOnlyPath`; the policy is read from the registry's live
+// cache at enforcement time (print invocation / menu build), never captured
+// at open, so an owner's toggle reaches an already-open tab. Messages are
+// localized here once — all six editors surface identical wording.
+const cloudDocumentGate = {
+  isCloudOnlyPath: (path: string): boolean =>
+    getDocumentStoreRouter()?.isCloudOnlyPath(path) === true,
+  printPolicy: (path: string): 'allow' | 'deny' =>
+    getDocumentStoreRouter()?.printPolicyForPath(path) ?? 'allow',
+  blockedMessage: (reason: 'export-blocked' | 'print-blocked'): string =>
+    tm(reason === 'export-blocked' ? 'errExportBlocked' : 'errPrintBlocked'),
+}
+setDocsCloudGate(cloudDocumentGate)
+setSheetsCloudGate(cloudDocumentGate)
+setSlidesCloudGate(cloudDocumentGate)
+setPdfCloudGate(cloudDocumentGate)
+setMarkdownCloudGate(cloudDocumentGate)
+setHtmlCloudGate(cloudDocumentGate)
+
+/**
+ * The ACTIVE pdf tab holds a cloud-only document → every export of it to a
+ * new local file is flat-blocked (Ruling 13). Covers the three shell-driven
+ * converter exports (docx/pptx/xlsx); the Save As menu item stays usable
+ * (saves are not gated — in remote mode a save-as uploads).
+ */
+function pdfTabExportBlocked(): boolean {
+  return tabExportBlocked(activePdfPath)
+}
+
+/** Print block = cloud-only AND the owner set the per-file policy to deny. */
+function pdfTabPrintBlocked(): boolean {
+  return tabPrintBlocked(activePdfPath)
+}
+
+/** Shared refusal for the shell-driven pdf converter exports. */
+async function refuseBlockedExport(): Promise<void> {
+  if (!shellWindow || shellWindow.isDestroyed()) return
+  await dialog.showMessageBox(shellWindow, {
+    type: 'warning',
+    message: tm('errExportBlocked'),
+    buttons: [tm('pdfPwdOk')],
+    noLink: true,
+  })
+}
+
+// Menu predicates (Ruling 13): each reads the ACTIVE tab's document path at
+// menu build time — the app menu is rebuilt on every tab switch, so the
+// enabled state follows the tab. Invocation-time enforcement still lives in
+// the handlers; a policy flipped mid-session takes effect there even while a
+// stale menu item stays enabled until the next rebuild.
+const activePdfPath = (): string | undefined => tabManager?.activePdfTab()?.filePath
+const activeMarkdownPath = (): string | undefined => tabManager?.activeMarkdownTab()?.filePath
+const activeHtmlPath = (): string | undefined => tabManager?.activeHtmlTab()?.filePath
+
+function tabExportBlocked(pathOf: () => string | undefined): boolean {
+  const path = pathOf()
+  return path !== undefined && cloudDocumentGate.isCloudOnlyPath(path)
+}
+
+/** Print block = cloud-only AND the owner set the per-file policy to deny. */
+function tabPrintBlocked(pathOf: () => string | undefined): boolean {
+  const path = pathOf()
+  if (path === undefined || !cloudDocumentGate.isCloudOnlyPath(path)) return false
+  return cloudDocumentGate.printPolicy(path) === 'deny'
+}
 
 /** The editor tab opener a cloud document kind opens in (Phase 7f). */
 function openCloudTabForKind(

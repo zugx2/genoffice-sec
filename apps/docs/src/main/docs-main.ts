@@ -2343,6 +2343,8 @@ export function docsFileRenamed(wc: WebContents, oldPath: string, newPath: strin
   // an encrypted document's password must follow the path, or the next save
   // finds no password under the new name and silently writes plaintext
   renameDocPassword(wc.id, oldPath, newPath)
+  // the gate's identity of this tab's document follows the rename too
+  if (activeDocPathByWc.get(wc.id) === oldPath) activeDocPathByWc.set(wc.id, newPath)
   wc.send('docs:renamed', { oldPath, newPath })
 }
 
@@ -2400,6 +2402,61 @@ export function removeStarredFiles(filePaths: string[]): void {
 const pdfWritablePaths = new Map<number, Set<string>>()
 const tornDownWcIds = new Set<number>()
 
+// ── Ruling 13: cloud-file export block + per-file print policy ──────────
+//
+// The shell injects the gate (the storage-mode router's isCloudOnlyPath plus
+// the registry's cached print policy); standalone docs never registers one
+// and nothing is ever blocked. Unlike saves, docs keeps no main-side path per
+// tab — the renderer passes paths per call — but the export/print handlers
+// carry no path at all, so the gate tracks the active document per webContents
+// here: recorded at open (loadDocx), re-pointed on rename and save-as, and
+// dropped with the tab.
+
+/** The Ruling 13 gate the shell installs; null in standalone mode. */
+export interface DocsCloudGate {
+  /** true when the path is a cloud-only document (remote-mode pinned / scratch) */
+  isCloudOnlyPath(path: string): boolean
+  /** the document's cached print policy, re-read at each enforcement */
+  printPolicy(path: string): 'allow' | 'deny'
+  /** localized message for a typed gate failure (shell-owned wording) */
+  blockedMessage(reason: 'export-blocked' | 'print-blocked'): string
+}
+
+let cloudGate: DocsCloudGate | null = null
+
+export function setDocsCloudGate(gate: DocsCloudGate | null): void {
+  cloudGate = gate
+}
+
+/** active document path per tab webContents (the export/print gate's key) */
+const activeDocPathByWc = new Map<number, string>()
+
+/** A typed blocked result the renderer surfaces via its own failure paths. */
+interface GateBlocked {
+  ok: false
+  reason: 'export-blocked' | 'print-blocked'
+  error: string
+}
+
+/**
+ * The Ruling 13 verdict for `wcId`'s active document: a typed blocked result
+ * when exports are forbidden, null when the flow may proceed. Unknown path
+ * (a brand-new untitled document) reads as local — there is nothing to block.
+ */
+function exportBlock(wcId: number): GateBlocked | null {
+  const path = activeDocPathByWc.get(wcId)
+  if (path === undefined || cloudGate?.isCloudOnlyPath(path) !== true) return null
+  return { ok: false, reason: 'export-blocked', error: cloudGate.blockedMessage('export-blocked') }
+}
+
+/** Print stays available; only an explicit per-file `deny` policy blocks it. */
+function printBlock(wcId: number): GateBlocked | null {
+  const path = activeDocPathByWc.get(wcId)
+  if (path === undefined || cloudGate?.isCloudOnlyPath(path) !== true) return null
+  if (cloudGate.printPolicy(path) !== 'deny') return null
+  return { ok: false, reason: 'print-blocked', error: cloudGate.blockedMessage('print-blocked') }
+}
+
 /** MCP save_session: the shell resolved this path for the tab, so docs:save-to may write it */
 export function authorizeMcpDocWrite(wcId: number, filePath: string): void {
   getDocumentStore().authorizeWrite(wcId, { path: filePath })
@@ -2434,6 +2491,7 @@ function isImageExportTemp(wcId: number, filePath: string): boolean {
 function dropDocWriter(wcId: number): void {
   getDocumentStore().forgetOwner(wcId)
   pdfWritablePaths.delete(wcId)
+  activeDocPathByWc.delete(wcId)
   for (const p of imageExportTemps.get(wcId) ?? []) void rm(p, { force: true })
   imageExportTemps.delete(wcId)
   imageExportDirs.delete(wcId)
@@ -2464,6 +2522,7 @@ export function teardownDocsRenderer(contents: WebContents): void {
   // must also lose its dialog-authorized PDF targets and disk-state cache
   getDocumentStore().forgetOwner(contents.id)
   pdfWritablePaths.delete(contents.id)
+  activeDocPathByWc.delete(contents.id)
   forgetDocPasswords(contents.id)
   if (!contents.isDestroyed()) contents.send('docs:teardown')
 }
@@ -2580,6 +2639,8 @@ async function loadDocx(
   pushRecent(filePath)
   store.authorizeWrite(wcId, { path: filePath })
   if (fileOpenedHook) fileOpenedHook(wcId, filePath)
+  // the export/print gate keys on this tab's active document (Ruling 13)
+  activeDocPathByWc.set(wcId, filePath)
   markDiskEncrypted(wcId, filePath, encrypted)
   // record the on-disk file, not the recovery copy: what matters is what save would overwrite
   await store.recordDiskState(wcId, { path: filePath }, hash)
@@ -3595,6 +3656,8 @@ export function registerDocsIpc(): void {
           result.filePath,
         )
         pushRecent(result.filePath)
+        // save-as re-points the tab's working copy: the gate's identity follows
+        activeDocPathByWc.set(event.sender.id, result.filePath)
         notifyFileSaved(event.sender, result.filePath)
         return {
           ok: true,
@@ -3639,6 +3702,8 @@ export function registerDocsIpc(): void {
       }
       const passwordIntentPending = commitDocPasswordSave(event.sender.id, passwordState, filePath)
       pushRecent(filePath)
+      // the tab's working copy lands here (first save of a new document)
+      activeDocPathByWc.set(event.sender.id, filePath)
       notifyFileSaved(event.sender, filePath)
       return {
         ok: true,
@@ -3873,6 +3938,10 @@ export function registerDocsIpc(): void {
     scale && scale > 0 && scale !== 1 ? { scaleFactor: Math.round(scale * 100) } : {}
 
   ipcMain.handle('docs:print', async (event, scale?: number) => {
+    // Ruling 13: cloud-only + per-file policy deny → typed block (the policy
+    // is re-read here at print invocation, not captured at open)
+    const blocked = printBlock(event.sender.id)
+    if (blocked) return blocked
     // print the calling tab's own content; zero margins — the docx page padding provides them.
     // Resolves when the system dialog is dismissed; the print dialog stays open on cancel
     // (ok=false without error) and surfaces real failures.
@@ -3899,6 +3968,11 @@ export function registerDocsIpc(): void {
       outPath?: string,
       scale?: number,
     ) => {
+      // Ruling 13: cloud-only documents cannot be exported (typed block; the
+      // renderer's export-as-images pipeline reuses this handler, so blocking
+      // here also fences the whole image-export flow before the temp PDF)
+      const blocked = exportBlock(event.sender.id)
+      if (blocked) return blocked
       // renderer-supplied outPath is only honored when a save dialog authorized it before
       let filePath = outPath ?? null
       if (filePath && !canPdfWrite(event.sender.id, filePath)) {
@@ -3937,6 +4011,22 @@ export function registerDocsIpc(): void {
 
   ipcMain.handle('docs:save-image-as', async (event, src: unknown) => {
     if (tornDownWcIds.has(event.sender.id) || typeof src !== 'string') return { ok: false }
+    // Ruling 13: an embedded image is document content — a cloud-only document's
+    // images stay in the cloud too. The renderer ignores this handler's result,
+    // so the block surfaces as a native message box (localized shell-side).
+    const blocked = exportBlock(event.sender.id)
+    if (blocked) {
+      const parent = dialogParent(event)
+      const options = {
+        type: 'warning' as const,
+        message: blocked.error,
+        buttons: [tm('btnCancel')] as string[],
+        noLink: true,
+      }
+      if (parent && !parent.isDestroyed()) await dialog.showMessageBox(parent, options)
+      else await dialog.showMessageBox(options)
+      return blocked
+    }
     return saveImageFromUrl(dialogParent(event), src, {
       title: tm('dlgSaveAs'),
       fallbackDir: defaultSaveDir(),
@@ -3980,6 +4070,10 @@ export function registerDocsIpc(): void {
   ipcMain.handle(
     'docs:write-export-image',
     async (event, dir: string, fileName: string, pngBase64: string) => {
+      // Ruling 13 backstop: the image-export entry is fenced at docs:export-pdf,
+      // so a PNG write here means an export slipped its fence — block the bytes
+      const blocked = exportBlock(event.sender.id)
+      if (blocked) return blocked
       if (typeof dir !== 'string' || !imageExportDirs.get(event.sender.id)?.has(dir)) {
         return { ok: false, error: 'export target is not an authorized folder' }
       }
@@ -4004,6 +4098,9 @@ export function registerDocsIpc(): void {
     'docs:export-html',
     async (event, defaultName: string, html: string, outPath?: string) => {
       if (typeof html !== 'string' || !html) return { ok: false, error: 'empty document' }
+      // Ruling 13: cloud-only documents cannot be exported
+      const blocked = exportBlock(event.sender.id)
+      if (blocked) return blocked
       let filePath = outPath ?? null
       if (filePath && !canPdfWrite(event.sender.id, filePath)) {
         return { ok: false, error: 'export target is not an authorized path' }
@@ -4053,6 +4150,9 @@ export function registerDocsIpc(): void {
   ipcMain.handle(
     'docs:save-merged-pdf',
     async (event, defaultName: string, base64Parts: string[], outPath?: string) => {
+      // Ruling 13: cloud-only documents cannot be exported (mixed-paper merge)
+      const blocked = exportBlock(event.sender.id)
+      if (blocked) return blocked
       let filePath = outPath ?? null
       if (filePath && !canPdfWrite(event.sender.id, filePath)) {
         return { ok: false, error: 'export target is not an authorized path' }
@@ -4253,9 +4353,23 @@ export function setDocsMenuGate(gate: () => boolean): void {
   docsMenuGate = gate
 }
 
+/**
+ * Ruling 13 menu state of the ACTIVE docs tab (the menu rebuilds on every tab
+ * switch, so items disable/enable per tab). Standalone (no gate) never blocks.
+ */
+function activeDocsGateState(): { exportBlocked: boolean; printBlocked: boolean } {
+  const wcId = activeDocsWebContents()?.id
+  const path = wcId !== undefined ? activeDocPathByWc.get(wcId) : undefined
+  if (path === undefined || cloudGate?.isCloudOnlyPath(path) !== true) {
+    return { exportBlocked: false, printBlocked: false }
+  }
+  return { exportBlocked: true, printBlocked: cloudGate.printPolicy(path) === 'deny' }
+}
+
 export function buildDocsMenu(): void {
   if (docsMenuGate && !docsMenuGate()) return
   const isMac = process.platform === 'darwin'
+  const gate = activeDocsGateState()
   const recent = readJson<string[]>(RECENT_PATH(), [])
     .filter((p) => existsSync(p))
     .slice(0, 10)
@@ -4322,12 +4436,27 @@ export function buildDocsMenu(): void {
         },
         { type: 'separator' },
         { label: tm('menuPageSetup'), click: () => sendCommand('page-setup') },
-        { label: tm('menuExportPdf'), click: () => sendCommand('export-pdf') },
-        { label: tm('menuExportHtml'), click: () => sendCommand('export-html') },
-        { label: tm('menuExportImages'), click: () => sendCommand('export-images') },
+        // Ruling 13: a cloud-only document's exports are flat-blocked (the
+        // handlers enforce it too — these enabled flags are the visible half)
+        {
+          label: tm('menuExportPdf'),
+          enabled: !gate.exportBlocked,
+          click: () => sendCommand('export-pdf'),
+        },
+        {
+          label: tm('menuExportHtml'),
+          enabled: !gate.exportBlocked,
+          click: () => sendCommand('export-html'),
+        },
+        {
+          label: tm('menuExportImages'),
+          enabled: !gate.exportBlocked,
+          click: () => sendCommand('export-images'),
+        },
         {
           label: tm('menuPrint'),
           accelerator: 'CmdOrCtrl+P',
+          enabled: !gate.printBlocked, // per-file print policy
           // routed through the renderer: it opens the pagination preview first so each
           // printed sheet is exactly one editor page (WYSIWYG), then invokes docs:print
           click: () => sendCommand('print'),

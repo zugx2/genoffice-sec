@@ -142,7 +142,7 @@ What each editor routes, and where its file-backed machinery remains:
 | docs     | open/save/save-as/save-new/save-to/recovery (pilot, 7e)                                                                                              | lazy media reads the scratch twin                                                                                                                                        |
 | sheets   | session snapshot at open, save (bytes pushed after the sidecar lands them), recovery copies, csv import source, MCP target grants                    | the sidecar itself (it opens and writes real files; the store materializes its inputs and ships its outputs); in-place CSV saves stay local (`.csv` is not a cloud kind) |
 | slides   | open reads, save/save-as/save-to, AI drafts, crash-recovery copies                                                                                   | nothing byte-moving                                                                                                                                                      |
-| pdf      | routed open read, save, in-place page ops (insert/replace/resize/crop), all document reads (previews, page images, form fills, text-edit validation) | exports to NEW files (extract/split/merge outputs, image export) remain plain local artifacts, exactly like the print/export paths of every editor                       |
+| pdf      | routed open read, save, in-place page ops (insert/replace/resize/crop), all document reads (previews, page images, form fills, text-edit validation) | since Ruling 13 the export-to-NEW-file paths are gated (see "Ruling 13" below), not removed; they remain plain local artifacts for local/hybrid documents                |
 | markdown | open read, save/save-as                                                                                                                              | asset files beside the document (scratch-relative for remote docs)                                                                                                       |
 | html     | open read, save/save-as                                                                                                                              | same asset story as markdown                                                                                                                                             |
 
@@ -183,3 +183,61 @@ Notes and residuals, all rooted in the same honest caveats as before:
   beside the home screen's recents; it installs the same
   `isCloudOnlyPath` filter (`setSlidesRecentPathFilter`) so a remote-routed
   deck's ephemeral path never grows a row there either.
+
+## Ruling 13: cloud-only exports are flat-blocked; printing is a per-file policy
+
+User ruling (2026-09-27): **files open from the secure cloud must not be
+exportable**, amended to keep **printing available** with printing
+restrictions as a **per-file policy** instead. Shipped shape:
+
+- **Export block.** Every flow that writes document-derived bytes of a
+  CLOUD-ONLY document (the router's `isCloudOnlyPath()`: remote-mode pinned
+  docs and scratch files — never hybrid/local) to a NEW local file answers a
+  typed `export-blocked` at the handler and its application-menu item
+  disables while the tab is active. Two layers on purpose: the menu is the
+  visible half (the app menu rebuilds per tab switch, so `enabled` follows
+  the active tab), the handler is the enforcement (invocation-time, so a
+  stale menu item still cannot leak). Per editor:
+  docs `export-pdf`/`export-html`/`save-merged-pdf`/`write-export-image`/
+  `save-image-as`; pdf `extract-pages`/`split-pdf`/`merge-pdf`/
+  `merge-pages`/`export-images` plus the shell's docx/pptx/xlsx converters;
+  sheets `export-pdf`/`export-csv`; slides `export-images`/`export-pdf`;
+  markdown `export-pdf`/`export-docx` (dialog mode)/`save-image-as`;
+  html `export-docx`/`export-pdf`/`export-html`. The shell injects one gate
+  object into all six editors (`set<Editor>CloudGate`) built from the router
+  predicate plus the registry's cached print policy; standalone apps
+  register none and never block.
+- **Per-file print policy.** `document_meta.print_policy` on the server
+  (`'allow'` default | `'deny'`; `PUT /documents/:id/print-policy`, owner-
+  scoped, enum-validated, deliberately version-bump-free like the other
+  meta writes), carried through the registry snapshot to the cloud view's
+  printer toggle (one per row; the optimistic edit REVERTS on a failed
+  write — a governance toggle is never offline-queued like a star).
+  `DocumentStoreRouter.printPolicyForPath()` reads the LIVE cache at print
+  invocation — never captured at open, so an owner's flip applies to an
+  already-open tab — and kicks the rate-limited auto-refresh, so a policy
+  flipped elsewhere converges within ~30 s. Enforcement points: docs/
+  sheets/slides inside their print handlers (typed `print-blocked`), pdf
+  via a `pdf:print-gate` invoke the renderer consults before opening its
+  print dialog (toolbar button and ⌘P included), markdown/html at the
+  main-side print senders (their only menu-driven entry points), with the
+  menu item disabled on deny everywhere.
+- **Not gated, deliberately:** saves and save-as (they upload in remote
+  mode); hybrid/local documents (an authoritative local copy already
+  exists); the markdown "Open in Docs" hand-off (writes the app-owned
+  markdown-conversions cache, not a user artifact); MCP save-to flows
+  (store-routed: in remote mode they mint new server documents, no local
+  file); screenshots and clipboard copies (out of scope, see below).
+
+**Honest limits — this is data governance, not DRM.** The policy is
+enforced by the shipped clients. A modified client, a user with raw API
+access to their OWN data (`GET /documents/:id` is and must remain available
+to the owner's own signed-in client), or a screenshot/copy-paste bypasses
+all of it. There is no watermarking, no server-side kill switch, and no
+screenshot defense: the block removes the one-click "save a copy" paths and
+makes the restriction visible and owner-managed, nothing more. One residual
+is recorded for completeness: the shell's pdf Save As has a byte-identical
+clean-copy branch (`copyFileSync` when the tab has no pending edits) that
+lands a local file even for a scratch-backed tab — save-as is explicitly
+outside the ruling, and this branch is where its "it uploads" justification
+holds the least.

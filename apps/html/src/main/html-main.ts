@@ -932,6 +932,20 @@ export function sendHtmlExportRequest(contents: WebContents, format: ExportForma
 /** Shell menu Print: ask the renderer to build the print HTML and open the system dialog */
 export function sendHtmlPrintRequest(contents: WebContents): void {
   if (contents.isDestroyed() || presentOwnerByWc.has(contents.id)) return
+  // Ruling 13 backstop: the menu item is disabled when the per-file policy
+  // denies printing; refuse anyway if a stale menu let a click through
+  // (this renderer currently has no printRequest listener — the check keeps
+  // the channel honest if one is wired later)
+  const path = savePathByWc.get(contents.id)
+  if (
+    cloudGate &&
+    path !== undefined &&
+    cloudGate.isCloudOnlyPath(path) &&
+    cloudGate.printPolicy(path) === 'deny'
+  ) {
+    console.warn('[html] print blocked by the document print policy')
+    return
+  }
   contents.send(HTML_CHANNELS.printRequest)
 }
 
@@ -941,6 +955,55 @@ export function htmlIsDirty(webContentsId: number): boolean {
 
 export function htmlFilePath(webContentsId: number): string | undefined {
   return savePathByWc.get(webContentsId)
+}
+
+// ── Ruling 13: cloud-file export block + per-file print policy ──────────
+//
+// The shell injects the gate (the router's isCloudOnlyPath + the registry's
+// cached print policy); standalone html never registers one and nothing is
+// ever blocked. The active document is `savePathByWc` — already tracked for
+// saves, so the gate needs no state of its own.
+
+/** The Ruling 13 gate the shell installs; null in standalone mode. */
+export interface HtmlCloudGate {
+  /** true when the path is a cloud-only document (remote-mode pinned / scratch) */
+  isCloudOnlyPath(path: string): boolean
+  /** the document's cached print policy, re-read at each enforcement */
+  printPolicy(path: string): 'allow' | 'deny'
+  /** localized message for a typed gate failure (shell-owned wording) */
+  blockedMessage(reason: 'export-blocked' | 'print-blocked'): string
+}
+
+let cloudGate: HtmlCloudGate | null = null
+
+export function setHtmlCloudGate(gate: HtmlCloudGate | null): void {
+  cloudGate = gate
+}
+
+/** True when `wcId`'s active document is cloud-only (its exports flat-block). */
+function isCloudOnlyDoc(wcId: number): boolean {
+  const path = savePathByWc.get(wcId)
+  return path !== undefined && cloudGate?.isCloudOnlyPath(path) === true
+}
+
+/**
+ * Html's renderer shows only a generic "export failed" notice, so the gate
+ * surfaces the typed block as a native message box instead of a silent no-op.
+ */
+async function warnGateBlocked(
+  e: Electron.IpcMainInvokeEvent,
+  reason: 'export-blocked' | 'print-blocked',
+): Promise<void> {
+  if (!cloudGate) return
+  const win = BrowserWindow.fromWebContents(e.sender) ?? BrowserWindow.getFocusedWindow()
+  const options = {
+    type: 'warning' as const,
+    message: cloudGate.blockedMessage(reason),
+    buttons: [tm('btnCancel')] as string[],
+    noLink: true,
+  }
+  if (win && !win.isDestroyed()) await dialog.showMessageBox(win, options)
+  else await dialog.showMessageBox(options)
 }
 
 /** The file was renamed on disk — re-grant the new path and tell the renderer */
@@ -1617,6 +1680,12 @@ function registerHtmlIpc(): void {
       if (typeof request?.html !== 'string') {
         return { ok: false, error: 'html: bad export request' }
       }
+      // Ruling 13: cloud-only documents cannot be exported (before the dialog,
+      // so a blocked flow never even picks a destination)
+      if (isCloudOnlyDoc(e.sender.id)) {
+        await warnGateBlocked(e, 'export-blocked')
+        return { ok: false, error: cloudGate?.blockedMessage('export-blocked') ?? 'export-blocked' }
+      }
       const win =
         BrowserWindow.fromWebContents(e.sender) ?? BrowserWindow.getFocusedWindow() ?? undefined
       // Headless export has no dialog to authorize a path; the CLI already chose one.
@@ -1665,6 +1734,11 @@ function registerHtmlIpc(): void {
       if (typeof request?.html !== 'string') {
         return { ok: false, error: 'html: bad export request' }
       }
+      // Ruling 13: cloud-only documents cannot be exported
+      if (isCloudOnlyDoc(e.sender.id)) {
+        await warnGateBlocked(e, 'export-blocked')
+        return { ok: false, error: cloudGate?.blockedMessage('export-blocked') ?? 'export-blocked' }
+      }
       const win =
         BrowserWindow.fromWebContents(e.sender) ?? BrowserWindow.getFocusedWindow() ?? undefined
       // Headless export has no dialog to authorize a path; the CLI already chose one.
@@ -1700,6 +1774,11 @@ function registerHtmlIpc(): void {
     async (e, request: ExportHtmlRequest): Promise<ExportResult> => {
       if (typeof request?.html !== 'string') {
         return { ok: false, error: 'html: bad export request' }
+      }
+      // Ruling 13: cloud-only documents cannot be exported
+      if (isCloudOnlyDoc(e.sender.id)) {
+        await warnGateBlocked(e, 'export-blocked')
+        return { ok: false, error: cloudGate?.blockedMessage('export-blocked') ?? 'export-blocked' }
       }
       const win =
         BrowserWindow.fromWebContents(e.sender) ?? BrowserWindow.getFocusedWindow() ?? undefined

@@ -175,6 +175,13 @@ let indexPath: string
 const rekeyTabs = vi.fn()
 const rekeyRegistry = vi.fn()
 const cloudIdMinted = vi.fn()
+const autoRefresh = vi.fn(async () => ({
+  available: true,
+  documents: [],
+  syncedAt: 0,
+  stale: false,
+  pendingStars: 0,
+}))
 /** registry-shaped lookup over the backend's seeded documents */
 let entries: CloudDocumentEntry[]
 
@@ -188,6 +195,7 @@ const entryOf = (cloudId: string, over: Partial<CloudDocumentEntry> = {}): Cloud
   updatedAt: '2026-01-02T00:00:00.000Z',
   starred: false,
   lastOpenedAt: null,
+  printPolicy: 'allow',
   ...over,
 })
 
@@ -198,6 +206,8 @@ function makeRouter(): DocumentStoreRouter {
     document: (cloudId: string): CloudDocumentEntry | undefined =>
       entries.find((e) => e.cloudId === cloudId),
     rekeyDocument: rekeyRegistry,
+    // the print-policy lookup kicks a rate-limited refresh (fire-and-forget)
+    autoRefresh: autoRefresh,
   } as unknown as DocumentStoreRouterDeps['registry'] extends () => infer R | undefined ? R : never
   const deps: DocumentStoreRouterDeps = {
     mode: () => mode,
@@ -235,6 +245,7 @@ beforeEach(() => {
   rekeyTabs.mockClear()
   rekeyRegistry.mockClear()
   cloudIdMinted.mockClear()
+  autoRefresh.mockClear()
   mkdirSync(documentsDir, { recursive: true })
   router = makeRouter()
 })
@@ -834,5 +845,42 @@ describe('migration units', () => {
     await router.uploadDocument(path)
     const cloudId = associationOf(path)
     expect(backend.bytesOf(cloudId).toString()).toBe('local bytes')
+  })
+})
+
+// ── Print policy lookup (Ruling 13) ─────────────────────────────────────
+
+describe('printPolicyForPath', () => {
+  it('reads the registry entry of a cloud-only (scratch) document at call time', async () => {
+    mode = 'remote'
+    signedIn = true
+    const cloudId = backend.seed('gated.docx', 'docx', Buffer.from('gated'))
+    entries = [entryOf(cloudId, { printPolicy: 'deny' })]
+    const open = await router.openCloudDocument(cloudId)
+    if (!open.ok || open.plan.kind !== 'remote') throw new Error('expected a remote plan')
+    const scratchPath = open.plan.path
+
+    expect(router.isCloudOnlyPath(scratchPath)).toBe(true)
+    expect(router.printPolicyForPath(scratchPath)).toBe('deny')
+    // the lookup re-reads the LIVE cache: an owner's flip lands without
+    // reopening the tab (the rate-limited refresh kick rides along)
+    entries = [entryOf(cloudId, { printPolicy: 'allow' })]
+    expect(router.printPolicyForPath(scratchPath)).toBe('allow')
+    expect(autoRefresh).toHaveBeenCalled()
+  })
+
+  it('local and hybrid documents always read allow (never gated)', () => {
+    mode = 'hybrid'
+    signedIn = true
+    const path = localFile('plain-local.docx')
+    expect(router.isCloudOnlyPath(path)).toBe(false)
+    expect(router.printPolicyForPath(path)).toBe('allow')
+  })
+
+  it('an unknown path or a missing registry entry reads allow (fail open)', () => {
+    mode = 'remote'
+    signedIn = true
+    expect(router.printPolicyForPath(join(documentsDir, 'never-seen.docx'))).toBe('allow')
+    expect(router.printPolicyForPath(join(documentsDir, 'no-such-file.docx'))).toBe('allow')
   })
 })

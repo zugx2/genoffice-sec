@@ -29,8 +29,8 @@
  * `storage/document-files.ts`, keyed by the same `sub`/`documentId`.
  * Per-user document metadata (Phase 7d: server-side recents/starred, keyed
  * by the cloud document id instead of a local path) is a fourth table,
- * `document_meta` (`starred`, `last_opened_at`), deleted alongside the
- * document it annotates.
+ * `document_meta` (`starred`, `last_opened_at`, and since Ruling 13 the
+ * per-file `print_policy`), deleted alongside the document it annotates.
  */
 
 import { randomUUID } from 'node:crypto'
@@ -127,7 +127,9 @@ export interface DocumentVersionRecord {
  * List-item shape: metadata only, no bytes (`currentVersion` = If-Match value).
  * `starred`/`lastOpenedAt` come from the `document_meta` table (Phase 7d:
  * server-side recents/starred keyed by the cloud document id) and read as
- * `false`/`null` for a document nobody starred or opened yet.
+ * `false`/`null` for a document nobody starred or opened yet. `printPolicy`
+ * (Ruling 13) is the per-file print restriction the owner set, `'allow'` by
+ * default — metadata like `starred`, deliberately version-bump-free.
  */
 export interface DocumentSummaryRecord {
   id: string
@@ -146,7 +148,13 @@ export interface DocumentSummaryRecord {
   starred: boolean
   /** UTC ISO string of the last `POST /documents/:id/opened`; null when never */
   lastOpenedAt: string | null
+  /** Per-file print policy (Ruling 13): `'allow'` (default) or `'deny'` */
+  printPolicy: PrintPolicy
 }
+
+/** The values {@link DocumentSummaryRecord.printPolicy} may take. */
+export const PRINT_POLICIES = ['allow', 'deny'] as const
+export type PrintPolicy = (typeof PRINT_POLICIES)[number]
 
 /** Full metadata record returned by create/update (adds the current sha256). */
 export interface DocumentRecord extends DocumentSummaryRecord {
@@ -215,6 +223,7 @@ CREATE TABLE IF NOT EXISTS document_meta (
   document_id    TEXT NOT NULL,
   starred        INTEGER NOT NULL DEFAULT 0, -- 0/1
   last_opened_at TEXT, -- UTC ISO, null when never opened
+  print_policy   TEXT NOT NULL DEFAULT 'allow', -- Ruling 13: 'allow' | 'deny'
   PRIMARY KEY (sub, document_id)
 );
 `
@@ -253,6 +262,8 @@ interface DocumentRow {
   starred?: number
   /** from the LEFT JOIN on document_meta; null/undefined when never opened */
   last_opened_at?: string | null
+  /** from the LEFT JOIN on document_meta; 'allow'/'deny' (default 'allow') */
+  print_policy?: string | null
 }
 
 interface DocumentVersionRow {
@@ -264,6 +275,15 @@ interface DocumentVersionRow {
 
 function nowIso(): string {
   return new Date().toISOString()
+}
+
+/**
+ * Normalizes a stored `document_meta.print_policy` value: anything but the
+ * literal 'deny' reads as 'allow' (the column default, and the sane reading
+ * of a row written before Ruling 13 or by a hypothetical older writer).
+ */
+function printPolicyOf(raw: string | null | undefined): PrintPolicy {
+  return raw === 'deny' ? 'deny' : 'allow'
 }
 
 /** Version rows kept per document (brief ruling 4: oldest pruned on insert). */
@@ -290,6 +310,18 @@ export class BackendStore {
       this.#db.exec('PRAGMA journal_mode = WAL;')
     }
     this.#db.exec(SCHEMA_SQL)
+    // Databases created before Ruling 13 lack the print_policy column; the
+    // default backfills 'allow' for every existing row (addDocumentVersion's
+    // table only gained a column, never a layout change). Statements are
+    // prepared after this, so nothing compiled against the old shape.
+    const metaColumns = this.#db
+      .prepare('SELECT name FROM pragma_table_info(?)')
+      .all('document_meta') as unknown as Array<{ name: string }>
+    if (!metaColumns.some((column) => column.name === 'print_policy')) {
+      this.#db.exec(
+        "ALTER TABLE document_meta ADD COLUMN print_policy TEXT NOT NULL DEFAULT 'allow'",
+      )
+    }
   }
 
   /** Prepared-statement cache: each SQL string is compiled exactly once. */
@@ -347,6 +379,7 @@ export class BackendStore {
       updatedAt: row.updated_at,
       starred: row.starred === 1,
       lastOpenedAt: row.last_opened_at ?? null,
+      printPolicy: printPolicyOf(row.print_policy),
     }
   }
 
@@ -592,7 +625,7 @@ export class BackendStore {
     return this.#stmt(
       `SELECT d.id, d.sub, d.name, d.kind, d.created_at, d.updated_at,
               d.version AS current_version, v.size, v.sha256,
-              m.starred, m.last_opened_at
+              m.starred, m.last_opened_at, m.print_policy
          FROM documents d
          JOIN document_versions v
            ON v.sub = d.sub AND v.document_id = d.id AND v.version = d.version
@@ -611,7 +644,7 @@ export class BackendStore {
     const rows = this.#stmt(
       `SELECT d.id, d.sub, d.name, d.kind, d.created_at, d.updated_at,
               d.version AS current_version, v.size,
-              m.starred, m.last_opened_at
+              m.starred, m.last_opened_at, m.print_policy
          FROM documents d
          JOIN document_versions v
            ON v.sub = d.sub AND v.document_id = d.id AND v.version = d.version
@@ -630,6 +663,7 @@ export class BackendStore {
       updatedAt: row.updated_at,
       starred: row.starred === 1,
       lastOpenedAt: row.last_opened_at ?? null,
+      printPolicy: printPolicyOf(row.print_policy),
     }))
   }
 
@@ -682,6 +716,7 @@ export class BackendStore {
         updatedAt: now,
         starred: false,
         lastOpenedAt: null,
+        printPolicy: 'allow',
       } satisfies DocumentRecord
     })
   }
@@ -816,19 +851,39 @@ export class BackendStore {
 
   // ── Document meta (Phase 7d: server-side recents/starred) ──
 
-  /** Star/open metadata of one document (absent row reads as unstarred/never). */
+  /** Star/open/print metadata of one document (absent row reads as unstarred/never/allow). */
   #documentMeta(
     sub: string,
     documentId: string,
-  ): { starred: boolean; lastOpenedAt: string | null } {
+  ): { starred: boolean; lastOpenedAt: string | null; printPolicy: PrintPolicy } {
     const row = this.#stmt(
-      'SELECT starred, last_opened_at FROM document_meta WHERE sub = ? AND document_id = ?',
+      'SELECT starred, last_opened_at, print_policy FROM document_meta WHERE sub = ? AND document_id = ?',
     ).get(sub, documentId) as unknown as
-      { starred: number; last_opened_at: string | null } | undefined
+      { starred: number; last_opened_at: string | null; print_policy?: string | null } | undefined
     return {
       starred: row !== undefined && row.starred === 1,
       lastOpenedAt: row?.last_opened_at ?? null,
+      printPolicy: printPolicyOf(row?.print_policy),
     }
+  }
+
+  /**
+   * Upserts the per-file print policy (Ruling 13). Deliberately If-Match-free
+   * and version-bump-free like the other meta writes, and it preserves the
+   * row's starred/last_opened_at halves (a policy toggle must not unstar or
+   * reset the recents stamp). Returns false when the document is not this
+   * sub's (the route maps that to the same 404 as everywhere else).
+   */
+  setDocumentPrintPolicy(sub: string, documentId: string, policy: PrintPolicy): boolean {
+    return this.#withTransaction(() => {
+      if (this.documentVersion(sub, documentId) === null) return false
+      this.#stmt(
+        `INSERT INTO document_meta (sub, document_id, starred, last_opened_at, print_policy)
+             VALUES (?, ?, 0, NULL, ?)
+         ON CONFLICT(sub, document_id) DO UPDATE SET print_policy = excluded.print_policy`,
+      ).run(sub, documentId, policy)
+      return true
+    })
   }
 
   /**

@@ -21,9 +21,18 @@ export const CLOUD_DOCS_CHANNELS = {
   toggleStarred: 'cloud:toggle-starred',
   /** record an open (server-side recents stamp) */
   markOpened: 'cloud:mark-opened',
+  /** set the per-file print policy (Ruling 13; owner-scoped, not offline-queued) */
+  setPrintPolicy: 'cloud:set-print-policy',
   /** push: the registry's list changed (refresh finished / star replayed) */
   documentsChanged: 'cloud:documents-changed',
 } as const
+
+/**
+ * The per-file print policy (Ruling 13): `'allow'` (the default) prints
+ * normally, `'deny'` blocks printing of a cloud-only document. Client-side
+ * governance — a modified client bypasses it (docs/cloud-storage.md).
+ */
+export type CloudPrintPolicy = 'allow' | 'deny'
 
 /** Document kinds the backend stores (mirrors DOCUMENT_KINDS in the routes). */
 export type CloudDocumentKind = 'docx' | 'xlsx' | 'pptx' | 'pdf' | 'md' | 'html'
@@ -49,6 +58,8 @@ export interface CloudDocumentEntry {
   starred: boolean
   /** UTC ISO of the last open, null when never opened */
   lastOpenedAt: string | null
+  /** per-file print policy (Ruling 13); reads as `'allow'` unless set to `'deny'` */
+  printPolicy: CloudPrintPolicy
 }
 
 /**
@@ -103,6 +114,14 @@ export interface CloudDocsApi {
    * stamp). Best-effort: failures are logged main-side, never thrown.
    */
   markOpened(cloudId: string): Promise<void>
+  /**
+   * Set the per-file print policy (Ruling 13) of one document. Applied to
+   * the cache optimistically and REVERTED when the server write fails (a
+   * policy is a governance statement: silently queueing it offline like a
+   * star could leave the owner believing printing is blocked when it is
+   * not). Throws so the caller can surface the failure.
+   */
+  setPrintPolicy(cloudId: string, policy: CloudPrintPolicy): Promise<CloudDocumentsSnapshot>
   /** push: the registry's list changed; returns the unsubscribe */
   onDocumentsChanged(handler: (payload: CloudDocumentsChangedPayload) => void): () => void
 }

@@ -632,6 +632,51 @@ export function clearPdfDirty(webContentsId: number): void {
   dirtyByWc.delete(webContentsId)
 }
 
+// ── Ruling 13: cloud-file export block + per-file print policy ──────────
+//
+// The shell injects the gate (the router's isCloudOnlyPath + the registry's
+// cached print policy); standalone pdf never registers one and nothing is
+// ever blocked. The active document is `openPathByWc` — tracked at open, so
+// the gate needs no state of its own.
+
+/** The Ruling 13 gate the shell installs; null in standalone mode. */
+export interface PdfCloudGate {
+  /** true when the path is a cloud-only document (remote-mode pinned / scratch) */
+  isCloudOnlyPath(path: string): boolean
+  /** the document's cached print policy, re-read at each enforcement */
+  printPolicy(path: string): 'allow' | 'deny'
+  /** localized message for a typed gate failure (shell-owned wording) */
+  blockedMessage(reason: 'export-blocked' | 'print-blocked'): string
+}
+
+let cloudGate: PdfCloudGate | null = null
+
+export function setPdfCloudGate(gate: PdfCloudGate | null): void {
+  cloudGate = gate
+}
+
+/** True when `wcId`'s open document is cloud-only (its exports flat-block). */
+function isCloudOnlyDoc(wcId: number): boolean {
+  const path = openPathByWc.get(wcId)
+  return path !== undefined && cloudGate?.isCloudOnlyPath(path) === true
+}
+
+/** The typed blocked result for an export flow (surfaces via opFailed). */
+function exportBlocked(): { ok: false; error: string; reason: 'export-blocked' } {
+  return {
+    ok: false,
+    reason: 'export-blocked',
+    error: cloudGate?.blockedMessage('export-blocked') ?? 'export-blocked',
+  }
+}
+
+/** Print verdict at invocation: true when the per-file policy denies printing. */
+function printDenied(wcId: number): boolean {
+  const path = openPathByWc.get(wcId)
+  if (path === undefined || cloudGate?.isCloudOnlyPath(path) !== true) return false
+  return cloudGate.printPolicy(path) === 'deny'
+}
+
 // ── Content-derived auto-naming (pdf's analog of sheets' autoRenameWorkbook) ──
 
 /** Paths of shell-created blank PDFs still carrying their untitled name; only these may auto-rename */
@@ -841,6 +886,13 @@ export function flushPdfSave(contents: WebContents): Promise<boolean> {
 
 /** Menu Print: ask the renderer to run its print flow (save, rasterize, system dialog) */
 export function sendPdfPrintRequest(contents: WebContents): void {
+  // Ruling 13 backstop: the menu item is disabled when the per-file policy
+  // denies printing; the renderer's print-gate invoke re-checks at the
+  // dialog anyway (its own toolbar button and ⌘P skip this sender)
+  if (printDenied(contents.id)) {
+    console.warn('[pdf] print blocked by the document print policy')
+    return
+  }
   if (!contents.isDestroyed()) contents.send(PDF_CHANNELS.printRequest)
 }
 
@@ -1208,6 +1260,8 @@ function registerPdfIpc(): void {
       ) {
         return { ok: false, error: 'pdf: path not granted to this view' }
       }
+      // Ruling 13: cloud-only documents cannot be extracted to a new file
+      if (isCloudOnlyDoc(e.sender.id)) return exportBlocked()
       try {
         const bytes = await extractPagesBytes(await readDocumentBytes(path), pages)
         const targetPath = uniqueGeneratedPdfPath(
@@ -1280,6 +1334,8 @@ function registerPdfIpc(): void {
       if (typeof path !== 'string' || !allowedByWc.get(e.sender.id)?.has(path)) {
         return { ok: false, error: 'pdf: path not granted to this view' }
       }
+      // Ruling 13: cloud-only documents cannot be split out to new files
+      if (isCloudOnlyDoc(e.sender.id)) return exportBlocked()
       const win =
         BrowserWindow.fromWebContents(e.sender) ?? BrowserWindow.getFocusedWindow() ?? undefined
       const picked = await showOpenDialogWithMemory(dialog, win, {
@@ -1313,6 +1369,8 @@ function registerPdfIpc(): void {
       if (typeof path !== 'string' || !allowedByWc.get(e.sender.id)?.has(path)) {
         return { ok: false, error: 'pdf: path not granted to this view' }
       }
+      // Ruling 13: a cloud-only document cannot be merged out to a new file
+      if (isCloudOnlyDoc(e.sender.id)) return exportBlocked()
       const win =
         BrowserWindow.fromWebContents(e.sender) ?? BrowserWindow.getFocusedWindow() ?? undefined
       const picked = await showOpenDialogWithMemory(dialog, win, {
@@ -1349,6 +1407,8 @@ function registerPdfIpc(): void {
       if (!Number.isInteger(perSheet) || perSheet < 2 || perSheet > 16) {
         return { ok: false, error: 'pdf: pages-per-sheet must be 2-16' }
       }
+      // Ruling 13: cloud-only documents cannot be N-up merged to a new file
+      if (isCloudOnlyDoc(e.sender.id)) return exportBlocked()
       try {
         const bytes = await mergePagesBytes(await readDocumentBytes(path), {
           perSheet,
@@ -1477,6 +1537,9 @@ function registerPdfIpc(): void {
       const { images, pageNumbers, baseName } = request ?? {}
       if (!Array.isArray(images) || images.length === 0)
         return { ok: false, error: 'pdf: no images' }
+      // Ruling 13: rendered pages are document bytes — a cloud-only document's
+      // pages stay in the cloud (checked before the folder dialog)
+      if (isCloudOnlyDoc(e.sender.id)) return exportBlocked()
       const win =
         BrowserWindow.fromWebContents(e.sender) ?? BrowserWindow.getFocusedWindow() ?? undefined
       const picked = await showOpenDialogWithMemory(dialog, win, {
@@ -1499,6 +1562,15 @@ function registerPdfIpc(): void {
       }
     },
   )
+
+  // Ruling 13: invocation-time print-policy check. The renderer calls this
+  // before opening its print dialog (toolbar button and ⌘P don't pass through
+  // the shell menu), so a per-file `deny` blocks even renderer-initiated
+  // prints; the policy is re-read here, never captured at open.
+  ipcMain.handle(PDF_CHANNELS.printGate, (e): { ok: true } | { ok: false; error: string } => {
+    if (!printDenied(e.sender.id)) return { ok: true }
+    return { ok: false, error: cloudGate?.blockedMessage('print-blocked') ?? 'print-blocked' }
+  })
 
   // pdf-owned (unlike ai:image-search / ai:fetch-image, which the shell registers app-wide):
   // slides' ai:generate-image is only registered once a slides view exists, so pdf needs its own

@@ -81,6 +81,7 @@ class FakeRegistry {
   sessionChanged = vi.fn()
   toggleStarred = vi.fn(async (): Promise<CloudDocumentsSnapshot> => this.snapshotMock)
   markOpened = vi.fn(async (): Promise<void> => undefined)
+  setPrintPolicy = vi.fn(async (): Promise<CloudDocumentsSnapshot> => this.snapshotMock)
   onChange = vi.fn().mockReturnValue(vi.fn())
   onDocumentRekeyed = vi.fn().mockReturnValue(vi.fn())
   rekeyDocument = vi.fn()
@@ -113,6 +114,7 @@ const AVAILABLE: CloudDocumentsSnapshot = {
       updatedAt: '2026-01-02T00:00:00.000Z',
       starred: true,
       lastOpenedAt: '2026-01-03T00:00:00.000Z',
+      printPolicy: 'allow',
     },
   ],
   syncedAt: 1_700_000_000_000,
@@ -124,6 +126,7 @@ const REQUEST_CHANNELS = [
   CLOUD_DOCS_CHANNELS.listDocuments,
   CLOUD_DOCS_CHANNELS.toggleStarred,
   CLOUD_DOCS_CHANNELS.markOpened,
+  CLOUD_DOCS_CHANNELS.setPrintPolicy,
 ] as const
 
 async function loadIpc() {
@@ -266,14 +269,42 @@ describe('cloud-docs ipc wire contract', () => {
         `opened ${JSON.stringify(payload)}`,
       ).rejects.toThrow()
     }
+    // print policy: strict {cloudId, policy} with an enum-validated policy
+    for (const payload of [
+      undefined,
+      {},
+      { cloudId: 'doc-1' },
+      { cloudId: 'doc-1', policy: 'block' },
+      { cloudId: 'doc-1', policy: 'ALLOW' },
+      { cloudId: 'doc-1', policy: 1 },
+      { cloudId: 'doc-1', policy: true },
+      { cloudId: 'doc-1', policy: 'deny', x: 1 },
+    ]) {
+      await expect(
+        invoke(CLOUD_DOCS_CHANNELS.setPrintPolicy, payload),
+        `policy ${JSON.stringify(payload)}`,
+      ).rejects.toThrow()
+    }
     expect(registry().toggleStarred).not.toHaveBeenCalled()
     expect(registry().markOpened).not.toHaveBeenCalled()
+    expect(registry().setPrintPolicy).not.toHaveBeenCalled()
   })
 
   it('passes a well-formed open stamp through to the registry', async () => {
     await loadIpc()
     await invoke(CLOUD_DOCS_CHANNELS.markOpened, { cloudId: 'doc-1' })
     expect(registry().markOpened).toHaveBeenCalledWith('doc-1')
+  })
+
+  it('passes a well-formed print-policy toggle through and returns the snapshot', async () => {
+    await loadIpc()
+    registry().snapshotMock = AVAILABLE
+    const result = await invoke(CLOUD_DOCS_CHANNELS.setPrintPolicy, {
+      cloudId: 'doc-1',
+      policy: 'deny',
+    })
+    expect(registry().setPrintPolicy).toHaveBeenCalledWith('doc-1', 'deny')
+    expect(result).toEqual(AVAILABLE)
   })
 
   it('broadcasts registry changes to every webContents, validated', async () => {

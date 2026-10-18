@@ -42,6 +42,8 @@ export const PDF_CHANNELS = {
   saveAsResult: 'pdf:save-as-result',
   saveAsFlow: 'pdf:save-as-flow',
   printRequest: 'pdf:print-request',
+  /** Ruling 13: invocation-time print-policy check (typed block, see pdf-main) */
+  printGate: 'pdf:print-gate',
   fileRenamed: 'pdf:file-renamed',
   getLanguage: 'app:get-language',
   languageChanged: 'app:language-changed',
@@ -739,6 +741,8 @@ export interface PdfApi {
   splitPages(request: SplitPagesRequest): Promise<SplitPagesResult>
   cropPages(request: CropPagesRequest): Promise<CropPagesResult>
   exportImages(request: ExportImagesRequest): Promise<ExportImagesResult>
+  /** Ruling 13: invocation-time print-policy check; ok=false carries the message */
+  printGate(): Promise<{ ok: true } | { ok: false; error: string }>
   /** Convert the current PDF to Word / Excel / PowerPoint via the shell's local conversion flows */
   convertOffice(format: PdfConvertFormat): Promise<void>
   /** AI create_document: build a new standalone file in the default folder and open it in a new tab */

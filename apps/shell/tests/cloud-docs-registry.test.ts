@@ -17,7 +17,7 @@
  * - `onDocumentRekeyed` / `rekeyDocument`: the Task 14 carry-over contract.
  */
 
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -601,5 +601,103 @@ describe('persisted file shape', () => {
     const stored = JSON.parse(readFileSync(storePath, 'utf-8')) as Record<string, unknown>
     expect(stored.owner).toBe(cloudDocsOwner('user-a'))
     expect(JSON.stringify(stored)).not.toContain('user-a')
+  })
+})
+
+// ── Per-file print policy (Ruling 13) ──────────────────────────────────
+
+describe('print policy (setPrintPolicy)', () => {
+  it('maps the server printPolicy through the list (anything unset reads allow)', async () => {
+    const registry = makeRegistry({
+      client: async () => ({ fetch: fetchMock }) as unknown as BackendClient,
+    })
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(200, {
+        documents: [DOC('doc-deny', { printPolicy: 'deny' }), DOC('doc-allow')],
+      }),
+    )
+    const snapshot = await registry.refresh()
+    const byId = new Map(snapshot.documents.map((d) => [d.cloudId, d]))
+    expect(byId.get('doc-deny')?.printPolicy).toBe('deny')
+    expect(byId.get('doc-allow')?.printPolicy).toBe('allow')
+  })
+
+  it('applies optimistically, PUTs the policy, and keeps the cache in step', async () => {
+    const registry = makeRegistry({
+      client: async () => ({ fetch: fetchMock }) as unknown as BackendClient,
+    })
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { documents: [DOC('doc-1')] }))
+    await registry.refresh()
+
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { printPolicy: 'deny' }))
+    const snapshot = await registry.setPrintPolicy('doc-1', 'deny')
+
+    expect(snapshot.documents[0]?.printPolicy).toBe('deny')
+    expect(registry.document('doc-1')?.printPolicy).toBe('deny')
+    const put = fetchMock.mock.calls[1] as unknown as [string, RequestInit]
+    expect(put[0]).toBe('/documents/doc-1/print-policy')
+    expect(put[1].method).toBe('PUT')
+    expect(put[1].body).toBe(JSON.stringify({ printPolicy: 'deny' }))
+    // the policy survives a reload through the persisted cache
+    expect(JSON.parse(readFileSync(storePath, 'utf-8'))).toMatchObject({
+      documents: [{ cloudId: 'doc-1', printPolicy: 'deny' }],
+    })
+  })
+
+  it('reverts the optimistic edit and throws when the write fails (never queued)', async () => {
+    const registry = makeRegistry({
+      client: async () => ({ fetch: fetchMock }) as unknown as BackendClient,
+    })
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { documents: [DOC('doc-1')] }))
+    await registry.refresh()
+
+    fetchMock.mockRejectedValueOnce(new TypeError('offline'))
+    await expect(registry.setPrintPolicy('doc-1', 'deny')).rejects.toThrow('offline')
+    // the cache snapped back to server truth: a governance toggle is either
+    // delivered or visibly failed, never parked in a queue like a star
+    expect(registry.document('doc-1')?.printPolicy).toBe('allow')
+
+    // and a 500 answers the same way
+    fetchMock.mockResolvedValueOnce(jsonResponse(500, { error: { code: 'internal_error' } }))
+    await expect(registry.setPrintPolicy('doc-1', 'deny')).rejects.toThrow('HTTP 500')
+    expect(registry.document('doc-1')?.printPolicy).toBe('allow')
+  })
+
+  it('refuses to address an unknown document or an empty cache', async () => {
+    const registry = makeRegistry({
+      client: async () => ({ fetch: fetchMock }) as unknown as BackendClient,
+    })
+    await expect(registry.setPrintPolicy('doc-1', 'deny')).rejects.toThrow(
+      'document list is not loaded',
+    )
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { documents: [DOC('doc-1')] }))
+    await registry.refresh()
+    await expect(registry.setPrintPolicy('doc-x', 'deny')).rejects.toThrow('unknown document')
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('a pre-Ruling-13 cache file without printPolicy loads as allow', () => {
+    writeFileSync(
+      storePath,
+      JSON.stringify({
+        owner: cloudDocsOwner('user-a'),
+        syncedAt: 1,
+        documents: [
+          {
+            cloudId: 'doc-old',
+            name: 'doc-old.md',
+            kind: 'md',
+            sizeBytes: 1,
+            currentVersion: 1,
+            createdAt: '2026-01-01T00:00:00.000Z',
+            updatedAt: '2026-01-01T00:00:00.000Z',
+            starred: false,
+            lastOpenedAt: null,
+          },
+        ],
+      }),
+    )
+    const registry = makeRegistry()
+    expect(registry.snapshot().documents[0]?.printPolicy).toBe('allow')
   })
 })

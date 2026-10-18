@@ -565,6 +565,54 @@ export function setSlidesDocumentStore(store: DocumentStore): void {
   documentStore = store
 }
 
+// ── Ruling 13: cloud-file export block + per-file print policy ──────────
+//
+// The shell injects the gate (the router's isCloudOnlyPath + the registry's
+// cached print policy); standalone slides never registers one and nothing is
+// ever blocked. The active deck is `sessions.get(wcId).path` — already
+// tracked for saves, so the gate needs no state of its own.
+
+/** The Ruling 13 gate the shell installs; null in standalone mode. */
+export interface SlidesCloudGate {
+  /** true when the path is a cloud-only document (remote-mode pinned / scratch) */
+  isCloudOnlyPath(path: string): boolean
+  /** the document's cached print policy, re-read at each enforcement */
+  printPolicy(path: string): 'allow' | 'deny'
+  /** localized message for a typed gate failure (shell-owned wording) */
+  blockedMessage(reason: 'export-blocked' | 'print-blocked'): string
+}
+
+let cloudGate: SlidesCloudGate | null = null
+
+export function setSlidesCloudGate(gate: SlidesCloudGate | null): void {
+  cloudGate = gate
+}
+
+/** The open deck's path per view (undefined = untitled — never cloud-only). */
+const deckPathOf = (wcId: number): string | undefined => sessions.get(wcId)?.path
+
+/** True when this view's deck is cloud-only (its exports flat-block). */
+function isCloudOnlyDeck(wcId: number): boolean {
+  const path = deckPathOf(wcId)
+  return path !== undefined && cloudGate?.isCloudOnlyPath(path) === true
+}
+
+/** Print verdict at invocation: true when the per-file policy denies printing. */
+function printDenied(wcId: number): boolean {
+  const path = deckPathOf(wcId)
+  if (path === undefined || cloudGate?.isCloudOnlyPath(path) !== true) return false
+  return cloudGate.printPolicy(path) === 'deny'
+}
+
+/** The typed export block the renderer surfaces through its own failure paths. */
+function exportBlocked(): { ok: false; error: string; reason: 'export-blocked' } {
+  return {
+    ok: false,
+    reason: 'export-blocked',
+    error: cloudGate?.blockedMessage('export-blocked') ?? 'export-blocked',
+  }
+}
+
 // ── Autosave (crash recovery): dirty sessions write a recovery copy every 30s; a normal save cleans it up ──
 // The copies live in the document store (the per-mode autosave, Phase 7e): a
 // remote-routed deck's tick PUTs a new server version and keeps no local
@@ -4290,7 +4338,11 @@ export function registerSlidesIpc(): void {
 
   ipcMain.handle(
     'slides:export-images',
-    async (_e, op: ExportImagesOp): Promise<ExportImagesResult> => {
+    async (e, op: ExportImagesOp): Promise<ExportImagesResult> => {
+      // Ruling 13: rendered pages are document bytes — a cloud-only deck's
+      // pages stay in the cloud (checked before writing, after the renderer
+      // already picked a folder; the message surfaces via the export result)
+      if (isCloudOnlyDeck(e.sender.id)) return exportBlocked()
       try {
         // Zero-padding width follows the total page count (3 digits for ≥100 pages)
         const pad = op.pngsBase64.length >= 100 ? 3 : 2
@@ -4318,7 +4370,9 @@ export function registerSlidesIpc(): void {
     return r.canceled || !r.filePath ? null : r.filePath
   })
 
-  ipcMain.handle('slides:export-pdf', async (_e, op: ExportPdfOp): Promise<ExportPdfResult> => {
+  ipcMain.handle('slides:export-pdf', async (e, op: ExportPdfOp): Promise<ExportPdfResult> => {
+    // Ruling 13: cloud-only decks cannot be exported to a new PDF
+    if (isCloudOnlyDeck(e.sender.id)) return exportBlocked()
     return exportSlidesPdf({
       ...op,
       createWindow: () => new BrowserWindow({ show: false, webPreferences: { sandbox: true } }),
@@ -4329,6 +4383,11 @@ export function registerSlidesIpc(): void {
   ipcMain.handle(
     'slides:print',
     async (e, op: PrintSlidesOp): Promise<{ ok: boolean; error?: string }> => {
+      // Ruling 13: per-file print policy, re-read at print invocation (the
+      // typed error surfaces through the print dialog's status line)
+      if (printDenied(e.sender.id)) {
+        return { ok: false, error: cloudGate?.blockedMessage('print-blocked') ?? 'print-blocked' }
+      }
       // Page assembly is shared with the renderer's print-preview pane (print-html.ts)
       const html = buildPrintDocumentHtml({
         srcs: op.pngsBase64.map((b64) => `data:image/png;base64,${b64}`),
@@ -4722,6 +4781,12 @@ export function buildSlidesMenu(): Menu {
     )
   const isMac = process.platform === 'darwin'
   const labels = appMenuLabels(getUiLang())
+  // Ruling 13 menu state (the menu rebuilds on every tab switch): the active
+  // slides tab holding a cloud-only deck disables its export items; print
+  // disables only when the per-file policy denies. The handlers re-check.
+  const activeWcId = windowRefs.activeWebContents?.id
+  const exportBlocked = activeWcId !== undefined && isCloudOnlyDeck(activeWcId)
+  const printBlocked = activeWcId !== undefined && printDenied(activeWcId)
   const template: Electron.MenuItemConstructorOptions[] = [
     ...(isMac ? [{ role: 'appMenu' as const }] : []),
     {
@@ -4747,9 +4812,22 @@ export function buildSlidesMenu(): Menu {
         { type: 'separator' },
         // The ribbon's File tab is Windows-only, so without these macOS had no way
         // to export or print at all
-        { label: tm('menuExportPdf'), click: () => send('export-pdf') },
-        { label: tm('menuExportImages'), click: () => send('export-images') },
-        { label: tm('menuPrint'), accelerator: 'CmdOrCtrl+P', click: () => send('print') },
+        {
+          label: tm('menuExportPdf'),
+          enabled: !exportBlocked, // Ruling 13: cloud-only → no export
+          click: () => send('export-pdf'),
+        },
+        {
+          label: tm('menuExportImages'),
+          enabled: !exportBlocked,
+          click: () => send('export-images'),
+        },
+        {
+          label: tm('menuPrint'),
+          accelerator: 'CmdOrCtrl+P',
+          enabled: !printBlocked, // Ruling 13: per-file print policy
+          click: () => send('print'),
+        },
         { type: 'separator' },
         closeActiveTabHook
           ? {

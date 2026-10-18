@@ -410,6 +410,18 @@ export function sendMarkdownExportRequest(contents: WebContents, format: ExportF
 
 /** Shell menu Print: ask the renderer to build the print HTML and open the system dialog */
 export function sendMarkdownPrintRequest(contents: WebContents): void {
+  // Ruling 13 backstop: the menu item is disabled when the per-file policy
+  // denies printing; refuse anyway if a stale menu let a click through
+  const path = savePathByWc.get(contents.id)
+  if (
+    cloudGate &&
+    path !== undefined &&
+    cloudGate.isCloudOnlyPath(path) &&
+    cloudGate.printPolicy(path) === 'deny'
+  ) {
+    console.warn('[markdown] print blocked by the document print policy')
+    return
+  }
   if (!contents.isDestroyed()) contents.send(MARKDOWN_CHANNELS.printRequest)
 }
 
@@ -419,6 +431,55 @@ export function markdownIsDirty(webContentsId: number): boolean {
 
 export function markdownFilePath(webContentsId: number): string | undefined {
   return savePathByWc.get(webContentsId)
+}
+
+// ── Ruling 13: cloud-file export block + per-file print policy ──────────
+//
+// The shell injects the gate (the router's isCloudOnlyPath + the registry's
+// cached print policy); standalone markdown never registers one and nothing
+// is ever blocked. The active document is `savePathByWc` — already tracked
+// for saves, so the gate needs no state of its own.
+
+/** The Ruling 13 gate the shell installs; null in standalone mode. */
+export interface MarkdownCloudGate {
+  /** true when the path is a cloud-only document (remote-mode pinned / scratch) */
+  isCloudOnlyPath(path: string): boolean
+  /** the document's cached print policy, re-read at each enforcement */
+  printPolicy(path: string): 'allow' | 'deny'
+  /** localized message for a typed gate failure (shell-owned wording) */
+  blockedMessage(reason: 'export-blocked' | 'print-blocked'): string
+}
+
+let cloudGate: MarkdownCloudGate | null = null
+
+export function setMarkdownCloudGate(gate: MarkdownCloudGate | null): void {
+  cloudGate = gate
+}
+
+/** True when `wcId`'s active document is cloud-only (its exports flat-block). */
+function isCloudOnlyDoc(wcId: number): boolean {
+  const path = savePathByWc.get(wcId)
+  return path !== undefined && cloudGate?.isCloudOnlyPath(path) === true
+}
+
+/**
+ * Markdown's renderer logs export failures to the console only, so the gate
+ * surfaces the typed block as a native message box instead of a silent no-op.
+ */
+async function warnGateBlocked(
+  e: Electron.IpcMainInvokeEvent,
+  reason: 'export-blocked' | 'print-blocked',
+): Promise<void> {
+  if (!cloudGate) return
+  const win = BrowserWindow.fromWebContents(e.sender) ?? BrowserWindow.getFocusedWindow()
+  const options = {
+    type: 'warning' as const,
+    message: cloudGate.blockedMessage(reason),
+    buttons: [tm('btnCancel')] as string[],
+    noLink: true,
+  }
+  if (win && !win.isDestroyed()) await dialog.showMessageBox(win, options)
+  else await dialog.showMessageBox(options)
 }
 
 /** The file was renamed on disk — re-grant the new path and tell the renderer */
@@ -909,6 +970,12 @@ function registerMarkdownIpc(): void {
 
   ipcMain.handle(MARKDOWN_CHANNELS.saveImageAs, async (e, src: unknown) => {
     if (typeof src !== 'string') return { ok: false }
+    // Ruling 13: an embedded image is document content — a cloud-only
+    // document's images stay in the cloud too
+    if (isCloudOnlyDoc(e.sender.id)) {
+      await warnGateBlocked(e, 'export-blocked')
+      return { ok: false }
+    }
     const win = BrowserWindow.fromWebContents(e.sender)
     return saveImageFromUrl(win, src, {
       title: tm('dlgSaveImage'),
@@ -950,6 +1017,8 @@ function registerMarkdownIpc(): void {
           // Each conversion gets an app-owned cache file. A marked session is
           // retained for the life of open Docs tabs; crash leftovers expire
           // after the explicit TTL enforced when the next session starts.
+          // (Ruling 13: an inter-editor hand-off through the app-owned cache,
+          // not a user export — deliberately not gated.)
           const target = await writeMarkdownConversion(
             await markdownConversionSession(),
             safeName,
@@ -957,6 +1026,14 @@ function registerMarkdownIpc(): void {
           )
           docxExportedHook?.(target)
           return { ok: true, path: target }
+        }
+        // Ruling 13: cloud-only documents cannot be exported
+        if (isCloudOnlyDoc(e.sender.id)) {
+          await warnGateBlocked(e, 'export-blocked')
+          return {
+            ok: false,
+            error: cloudGate?.blockedMessage('export-blocked') ?? 'export-blocked',
+          }
         }
         const win =
           BrowserWindow.fromWebContents(e.sender) ?? BrowserWindow.getFocusedWindow() ?? undefined
@@ -989,6 +1066,12 @@ function registerMarkdownIpc(): void {
           .replace(/[/\\:*?"<>|]/g, '_')
           .slice(0, 80)
           .trim() || tm('untitledFile')
+      // Ruling 13: cloud-only documents cannot be exported (before the dialog,
+      // so a blocked flow never even picks a destination)
+      if (isCloudOnlyDoc(e.sender.id)) {
+        await warnGateBlocked(e, 'export-blocked')
+        return { ok: false, error: cloudGate?.blockedMessage('export-blocked') ?? 'export-blocked' }
+      }
       const win =
         BrowserWindow.fromWebContents(e.sender) ?? BrowserWindow.getFocusedWindow() ?? undefined
       // Headless export has no dialog to authorize a path; the CLI already chose one.

@@ -1376,6 +1376,7 @@ export function CloudDocumentsSection() {
   const [open, setOpen] = useState(true)
   const [syncing, setSyncing] = useState(false)
   const [openError, setOpenError] = useState<OpenCloudDocumentError | null>(null)
+  const [policyError, setPolicyError] = useState(false)
 
   const list = () => {
     void window.aiOfficeCloud?.listDocuments().then((next) => {
@@ -1406,6 +1407,17 @@ export function CloudDocumentsSection() {
     // the returned snapshot already carries the optimistic flag, so the row
     // flips even while the server write is queued for replay
     void window.aiOfficeCloud?.toggleStarred(doc.cloudId, !doc.starred).then(setSnapshot)
+  }
+
+  /** Print-policy toggle (Ruling 13): allow ⇄ deny, applied optimistically;
+   * a failed write is reverted main-side, so the row snaps back and the
+   * error line explains it. */
+  const togglePrintPolicy = (doc: CloudDocumentEntry) => {
+    setPolicyError(false)
+    void window.aiOfficeCloud
+      ?.setPrintPolicy(doc.cloudId, doc.printPolicy === 'deny' ? 'allow' : 'deny')
+      .then(setSnapshot)
+      .catch(() => setPolicyError(true))
   }
 
   const markOpened = (doc: CloudDocumentEntry) => {
@@ -1460,6 +1472,36 @@ export function CloudDocumentsSection() {
               strokeWidth="1.2"
               strokeLinejoin="round"
             />
+          </svg>
+        </button>
+        <button
+          className={`star-btn policy-btn${doc.printPolicy === 'deny' ? ' denied' : ''}`}
+          aria-label={doc.printPolicy === 'deny' ? t('cloudPolicyDenied') : t('cloudPolicyAllowed')}
+          title={doc.printPolicy === 'deny' ? t('cloudPolicyDenied') : t('cloudPolicyAllowed')}
+          onClick={(event) => {
+            event.stopPropagation()
+            togglePrintPolicy(doc)
+          }}
+        >
+          <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true">
+            <path
+              d="M4.5 6V2.5h7V6M4.5 12H3a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1h-1.5M4.5 9.5h7V14h-7z"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.2"
+              strokeLinejoin="round"
+            />
+            {doc.printPolicy === 'deny' && (
+              <line
+                x1="2.5"
+                y1="14.5"
+                x2="14"
+                y2="1.5"
+                stroke="currentColor"
+                strokeWidth="1.2"
+                strokeLinecap="round"
+              />
+            )}
           </svg>
         </button>
       </div>
@@ -1536,6 +1578,11 @@ export function CloudDocumentsSection() {
           {openError !== null && (
             <p className="cloud-docs-error" role="alert">
               {t(openErrorKeyOf(openError))}
+            </p>
+          )}
+          {policyError && (
+            <p className="cloud-docs-error" role="alert">
+              {t('cloudPolicyErrFailed')}
             </p>
           )}
           {documents.length === 0 ? (

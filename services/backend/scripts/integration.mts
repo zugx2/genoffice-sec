@@ -879,6 +879,33 @@ async function main(): Promise<void> {
     )
     log('documents as A: starred + opened metadata endpoints ok')
 
+    // ── per-file print policy (Ruling 13): default allow, owner-togglable ──
+    const policyDeny = await api('PUT', `/documents/${docId}/print-policy`, userA.accessToken, {
+      printPolicy: 'deny',
+    })
+    expect(
+      policyDeny.status === 200 && policyDeny.body.printPolicy === 'deny',
+      `print-policy PUT must 200 with the reflected policy (got ${policyDeny.status})`,
+    )
+    expect(
+      policyDeny.body.currentVersion === 2,
+      `print-policy PUT must not bump the content version (got ${policyDeny.body.currentVersion})`,
+    )
+    const policyList = await api('GET', '/documents', userA.accessToken)
+    const policyRow = policyList.body.documents.find((d: any) => d.id === docId)
+    expect(
+      policyRow?.printPolicy === 'deny' && policyRow?.starred === true,
+      'document list must carry printPolicy from document_meta (star intact)',
+    )
+    const badPolicy = await api('PUT', `/documents/${docId}/print-policy`, userA.accessToken, {
+      printPolicy: 'block',
+    })
+    expect(
+      badPolicy.status === 400 && badPolicy.body.error.code === 'validation_failed',
+      `non-enum printPolicy must 400 (got ${badPolicy.status})`,
+    )
+    log('documents as A: per-file print policy (Ruling 13) ok')
+
     // ── cross-user isolation on documents (metadata AND bytes) ──
     const missingDoc = await api(
       'GET',

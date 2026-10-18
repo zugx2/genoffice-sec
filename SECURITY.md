@@ -137,6 +137,30 @@ lockdown (`sandbox: true`, `contextIsolation: true`, `nodeIntegration: false`),
 no preload script, no IPC surface — the main process drives it exclusively
 through `executeJavaScript` and destroys it under a watchdog timeout.
 
+## Data Governance: cloud-document export block and per-file print policy (Ruling 13)
+
+Documents opened from the cloud in `remote` storage mode (cloud-only — the
+router's `isCloudOnlyPath`) cannot be exported by any shipped flow: every
+handler that writes document-derived bytes of the active document to a NEW
+local file returns a typed `export-blocked`, and the corresponding menu
+items disable while such a tab is active. Printing stays available and is
+governed by a per-file print policy stored server-side
+(`document_meta.print_policy`, default `'allow'`), settable by the
+document's owner (`PUT /documents/:id/print-policy`, authenticated,
+enum-validated, version-independent) and enforced at print invocation for
+cloud-only documents (typed `print-blocked` + disabled menu item on
+`deny`). See `docs/cloud-storage.md` ("Ruling 13") for the per-surface map.
+
+**Posture and limits (stated plainly):** this is client-enforced data
+governance, not DRM. The owner of a document can always download their own
+data through the authenticated API, and a modified client, a raw API
+client, screenshots, or copy-paste bypass the gates entirely. The controls
+remove the shipped apps' one-click local-copy paths for cloud-only
+documents and make printing restrictions visible and owner-managed; they
+make no stronger claim. Local and hybrid documents are deliberately
+unaffected (an authoritative local copy already exists), and saves/save-as
+are deliberately ungated (they upload to the owner's own account).
+
 ## Out of Scope
 
 - The cloud AI services this client talks to are operated separately and are

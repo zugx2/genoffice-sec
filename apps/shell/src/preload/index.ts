@@ -591,6 +591,14 @@ const cloudDocsApi: CloudDocsApi = {
     if (typeof cloudId !== 'string' || !cloudId) throw new Error('Invalid cloudId.')
     await ipcRenderer.invoke(CLOUD_DOCS_CHANNELS.markOpened, { cloudId })
   },
+  async setPrintPolicy(cloudId, policy) {
+    if (typeof cloudId !== 'string' || !cloudId) throw new Error('Invalid cloudId.')
+    if (policy !== 'allow' && policy !== 'deny') throw new Error('Invalid print policy.')
+    return (await ipcRenderer.invoke(CLOUD_DOCS_CHANNELS.setPrintPolicy, {
+      cloudId,
+      policy,
+    })) as CloudDocumentsSnapshot
+  },
   onDocumentsChanged(handler) {
     const listener = (_event: IpcRendererEvent, payload: CloudDocumentsChangedPayload) =>
       handler(payload)

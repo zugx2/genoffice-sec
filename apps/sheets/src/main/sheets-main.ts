@@ -1753,6 +1753,71 @@ export function setSheetsDocumentStore(store: DocumentStore): void {
   documentStore = store
 }
 
+// ── Ruling 13: cloud-file export block + per-file print policy ──────────
+//
+// The shell injects the gate (the router's isCloudOnlyPath + the registry's
+// cached print policy); standalone sheets never registers one and nothing is
+// ever blocked. A tab's open documents are its sessions' paths — already
+// tracked for saves, so the gate needs no state of its own. The check is
+// deliberately tab-wide (any cloud-only session blocks): the export/print
+// requests don't carry a session id, and over-blocking a rare mixed
+// local+cloud tab beats leaking a cloud document to disk.
+
+/** The Ruling 13 gate the shell installs; null in standalone mode. */
+export interface SheetsCloudGate {
+  /** true when the path is a cloud-only document (remote-mode pinned / scratch) */
+  isCloudOnlyPath(path: string): boolean
+  /** the document's cached print policy, re-read at each enforcement */
+  printPolicy(path: string): 'allow' | 'deny'
+  /** localized message for a typed gate failure (shell-owned wording) */
+  blockedMessage(reason: 'export-blocked' | 'print-blocked'): string
+}
+
+let cloudGate: SheetsCloudGate | null = null
+
+export function setSheetsCloudGate(gate: SheetsCloudGate | null): void {
+  cloudGate = gate
+}
+
+/** Any cloud-only path in the tab's sessions → its exports flat-block (Ruling 13). */
+function hasCloudOnlySession(wcId: number): boolean {
+  const entry = sheetsTabs.get(wcId)
+  if (!entry) return false
+  return anyCloudOnlySheetSession([...entry.sessions.values()].map((session) => session.path))
+}
+
+/** Any cloud-only session whose per-file print policy denies printing. */
+function hasPrintDeniedSession(wcId: number): boolean {
+  const entry = sheetsTabs.get(wcId)
+  if (!entry) return false
+  return anyPrintDeniedSheetSession([...entry.sessions.values()].map((session) => session.path))
+}
+
+/**
+ * Ruling 13 pure helpers (exported so the gate matrix is testable without a
+ * live sidecar session): drive them with the open documents' paths.
+ */
+export function anyCloudOnlySheetSession(paths: Iterable<string>): boolean {
+  if (!cloudGate) return false
+  for (const path of paths) {
+    if (cloudGate.isCloudOnlyPath(path)) return true
+  }
+  return false
+}
+
+export function anyPrintDeniedSheetSession(paths: Iterable<string>): boolean {
+  if (!cloudGate) return false
+  for (const path of paths) {
+    if (cloudGate.isCloudOnlyPath(path) && cloudGate.printPolicy(path) === 'deny') return true
+  }
+  return false
+}
+
+/** The gate's typed refusal: thrown, so the renderer's own catch surfaces it. */
+function gateError(reason: 'export-blocked' | 'print-blocked'): Error {
+  return new Error(cloudGate?.blockedMessage(reason) ?? reason)
+}
+
 // ── Crash recovery ──────────────────────────────────────────
 // A dirty renderer asks for a recovery copy every 30s; the bytes are produced
 // by the normal save pipeline (writeWorkbookTo) and stored through the
@@ -2794,6 +2859,9 @@ export function registerSheetsIpc(): void {
 
   ipcMain.handle(IPC_CHANNELS.exportPdf, async (event, input: unknown) => {
     sessionFor(event)
+    // Ruling 13: cloud-only workbooks cannot be exported (thrown → the
+    // renderer's export catch surfaces the localized message)
+    if (hasCloudOnlySession(event.sender.id)) throw gateError('export-blocked')
     const request = workbookExportPdfRequestSchema.parse(input)
     const result = await exportPdf(event, request)
     if (!result.canceled && result.path) openGeneratedFile(result.path)
@@ -2802,11 +2870,15 @@ export function registerSheetsIpc(): void {
 
   ipcMain.handle(IPC_CHANNELS.printWorkbook, async (event, input: unknown) => {
     sessionFor(event)
+    // Ruling 13: per-file print policy, re-read at print invocation
+    if (hasPrintDeniedSession(event.sender.id)) throw gateError('print-blocked')
     return printWorkbook(event, workbookExportPdfRequestSchema.parse(input))
   })
 
   ipcMain.handle(IPC_CHANNELS.exportCsv, async (event, input: unknown) => {
     const entry = sessionFor(event)
+    // Ruling 13: cloud-only workbooks cannot be exported
+    if (hasCloudOnlySession(event.sender.id)) throw gateError('export-blocked')
     const request = workbookExportCsvRequestSchema.parse(input)
     const parent = dialogParent(event)
     if (request.hasFormulas) {
@@ -4119,6 +4191,12 @@ export function setSheetsCloseTabHook(fn: (() => void) | null): void {
 function installApplicationMenu(): void {
   const sendMenuAction = sendSheetsMenuAction
   const labels = appMenuLabels(getUiLang())
+  // Ruling 13 menu state (the menu rebuilds on every tab switch): the active
+  // sheets tab holding a cloud-only workbook disables its export items; print
+  // disables only when the per-file policy denies. The handlers re-check.
+  const activeWcId = activeSheetsWebContents?.id
+  const exportBlocked = activeWcId !== undefined && hasCloudOnlySession(activeWcId)
+  const printBlocked = activeWcId !== undefined && hasPrintDeniedSession(activeWcId)
   Menu.setApplicationMenu(
     Menu.buildFromTemplate([
       ...(process.platform === 'darwin' ? [{ role: 'appMenu' as const }] : []),
@@ -4148,15 +4226,18 @@ function installApplicationMenu(): void {
           {
             label: tm('menuPrint'),
             accelerator: 'CmdOrCtrl+P',
+            enabled: !printBlocked, // Ruling 13: per-file print policy
             click: () => sendMenuAction('print'),
           },
           { type: 'separator' },
           {
             label: tm('menuExportPdf'),
+            enabled: !exportBlocked, // Ruling 13: cloud-only → no export
             click: () => sendMenuAction('export-pdf'),
           },
           {
             label: tm('menuExportCsv'),
+            enabled: !exportBlocked,
             click: () => sendMenuAction('export-csv'),
           },
           { type: 'separator' },

@@ -184,6 +184,7 @@ describe('documents CRUD', () => {
       updatedAt: expect.any(String) as string,
       starred: false,
       lastOpenedAt: null,
+      printPolicy: 'allow',
     })
   })
 
@@ -227,7 +228,8 @@ describe('documents CRUD', () => {
     expect(items.length).toBeGreaterThanOrEqual(2)
     for (const item of items) {
       // Phase 7d extended the item with document_meta fields — additive:
-      // every pre-7d field keeps its name and shape.
+      // every pre-7d field keeps its name and shape. Ruling 13 added
+      // printPolicy the same way.
       expect(Object.keys(item).sort()).toEqual([
         'createdAt',
         'currentVersion',
@@ -235,12 +237,14 @@ describe('documents CRUD', () => {
         'kind',
         'lastOpenedAt',
         'name',
+        'printPolicy',
         'size',
         'starred',
         'updatedAt',
       ])
       expect(item.starred).toBe(false)
       expect(item.lastOpenedAt).toBeNull()
+      expect(item.printPolicy).toBe('allow')
     }
     const ids = items.map((d) => d.id)
     expect(ids).toContain(first.id)
@@ -847,6 +851,108 @@ describe('document meta (starred / lastOpenedAt)', () => {
   })
 })
 
+// ── Per-file print policy (Ruling 13) ──────────────────────────────────
+
+describe('print policy (PUT /print-policy)', () => {
+  it('defaults to allow, round-trips deny→allow in get and list, keeps star/open state', async () => {
+    const doc = await createDocument('policy-me.md', 'md', Buffer.from('p'))
+    expect(doc.printPolicy).toBe('allow')
+
+    // star + open first: the policy toggle must not disturb the sibling meta
+    await json('PUT', `/documents/${doc.id}/starred`, { payload: { starred: true } })
+    await json('POST', `/documents/${doc.id}/opened`)
+
+    const deny = await json('PUT', `/documents/${doc.id}/print-policy`, {
+      payload: { printPolicy: 'deny' },
+    })
+    expect(deny.status).toBe(200)
+    expect(deny.body.printPolicy).toBe('deny')
+    expect(deny.body.starred).toBe(true)
+    expect(deny.body.lastOpenedAt).toEqual(expect.any(String) as string)
+
+    const listed = (await json('GET', '/documents')).body.documents.find(
+      (d: any) => d.id === doc.id,
+    )
+    expect(listed.printPolicy).toBe('deny')
+    expect(listed.starred).toBe(true)
+
+    const back = await json('PUT', `/documents/${doc.id}/print-policy`, {
+      payload: { printPolicy: 'allow' },
+    })
+    expect(back.status).toBe(200)
+    expect(back.body.printPolicy).toBe('allow')
+    expect(back.body.starred).toBe(true)
+  })
+
+  it('never bumps the content version or disturbs If-Match (metadata, not bytes)', async () => {
+    const doc = await createDocument('policy-version.md', 'md', Buffer.from('v1'))
+    const deny = await json('PUT', `/documents/${doc.id}/print-policy`, {
+      payload: { printPolicy: 'deny' },
+    })
+    expect(deny.status).toBe(200)
+    expect(deny.body.currentVersion).toBe(1)
+    expect(deny.body.version).toBeUndefined()
+    // the pre-toggle If-Match value still guards the next byte write: the
+    // policy change is invisible to the version chain
+    const edit = await req('PUT', `/documents/${doc.id}`, {
+      ...multipart({}, Buffer.from('v2')),
+      ifMatch: '1',
+    })
+    expect(edit.statusCode).toBe(200)
+    expect(edit.json()).toMatchObject({ currentVersion: 2, printPolicy: 'deny' })
+  })
+
+  it('validates the body strictly (missing/invalid/extra → 400, nothing written)', async () => {
+    const doc = await createDocument('policy-validate.md', 'md', Buffer.from('v'))
+    for (const payload of [
+      undefined,
+      {},
+      { printPolicy: 'block' },
+      { printPolicy: 'ALLOW' },
+      { printPolicy: 1 },
+      { printPolicy: true },
+      { printPolicy: 'allow', x: 1 },
+    ]) {
+      const res = await json('PUT', `/documents/${doc.id}/print-policy`, { payload })
+      expect(res.status, JSON.stringify(payload)).toBe(400)
+      expect(res.body.error.code).toBe('validation_failed')
+    }
+    const listed = (await json('GET', '/documents')).body.documents.find(
+      (d: any) => d.id === doc.id,
+    )
+    expect(listed.printPolicy).toBe('allow')
+  })
+
+  it('keeps the policy isolated per sub (foreign id reads as 404, identical to missing)', async () => {
+    const aDoc = await createDocument('a-policy.md', 'md', Buffer.from('a'))
+    expect(
+      (
+        await json('PUT', `/documents/${aDoc.id}/print-policy`, {
+          payload: { printPolicy: 'deny' },
+        })
+      ).status,
+    ).toBe(200)
+
+    const missing = '00000000-0000-4000-8000-000000000000'
+    const foreign = await json('PUT', `/documents/${aDoc.id}/print-policy`, {
+      token: tokenB,
+      payload: { printPolicy: 'allow' },
+    })
+    const absent = await json('PUT', `/documents/${missing}/print-policy`, {
+      token: tokenB,
+      payload: { printPolicy: 'allow' },
+    })
+    expect(foreign.status).toBe(404)
+    expect(foreign.status).toBe(absent.status)
+    expect(foreign.body).toEqual(absent.body)
+    // A's deny survived B's probe untouched
+    const aListed = (await json('GET', '/documents')).body.documents.find(
+      (d: any) => d.id === aDoc.id,
+    )
+    expect(aListed.printPolicy).toBe('deny')
+  })
+})
+
 // ── Auth ───────────────────────────────────────────────────────────────
 
 describe('auth (401)', () => {
@@ -862,6 +968,7 @@ describe('auth (401)', () => {
       ['GET', `/documents/${doc.id}/versions/1`, {}],
       ['PUT', `/documents/${doc.id}/starred`, { payload: { starred: true } }],
       ['POST', `/documents/${doc.id}/opened`, {}],
+      ['PUT', `/documents/${doc.id}/print-policy`, { payload: { printPolicy: 'deny' } }],
     ]
     for (const [method, url, opts] of cases) {
       const res = await req(method, url, { ...opts, token: null })

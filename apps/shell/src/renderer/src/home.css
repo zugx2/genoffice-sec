@@ -1252,6 +1252,18 @@ body.vib .home {
   opacity: 1;
 }
 
+/* print-policy toggle (Ruling 13): hidden like the star while 'allow', but a
+ * 'deny' stays visible — the owner should see the restriction at a glance */
+.cloud-docs-row .policy-btn.denied {
+  opacity: 1;
+  color: var(--danger);
+}
+
+.cloud-docs-row .policy-btn:hover {
+  color: var(--danger);
+  background: var(--bg-hover-subtle);
+}
+
 .folder-unusable .btn {
   margin-top: 8px;
   font-size: 13px;

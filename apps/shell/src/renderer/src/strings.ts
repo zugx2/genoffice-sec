@@ -26,6 +26,9 @@ export const strings = {
     cloudDocsStale: '离线 — 显示最近一次的列表',
     cloudDocsPendingOne: '{n} 个收藏变更待同步',
     cloudDocsPendingMany: '{n} 个收藏变更待同步',
+    cloudPolicyAllowed: '打印：允许',
+    cloudPolicyDenied: '打印：已禁止',
+    cloudPolicyErrFailed: '打印限制保存失败，请重试。',
     // Document storage modes (Phase 7e)
     storageModeTitle: '文档存储位置',
     storageModeLocal: '仅本地',
@@ -439,6 +442,9 @@ export const strings = {
     cloudDocsStale: 'Offline — showing the last known list',
     cloudDocsPendingOne: '{n} star change waiting to sync',
     cloudDocsPendingMany: '{n} star changes waiting to sync',
+    cloudPolicyAllowed: 'Print: allowed',
+    cloudPolicyDenied: 'Print: blocked',
+    cloudPolicyErrFailed: 'Saving the print restriction failed. Try again.',
     // Document storage modes (Phase 7e)
     storageModeTitle: 'Document storage',
     storageModeLocal: 'Local only',
@@ -866,6 +872,9 @@ export const strings = {
     cloudDocsStale: 'オフライン — 最後のリストを表示中',
     cloudDocsPendingOne: '同期待ちのスター変更 {n} 件',
     cloudDocsPendingMany: '同期待ちのスター変更 {n} 件',
+    cloudPolicyAllowed: '印刷：許可',
+    cloudPolicyDenied: '印刷：禁止',
+    cloudPolicyErrFailed: '印刷制限の保存に失敗しました。もう一度お試しください。',
     // Document storage modes (Phase 7e)
     storageModeTitle: 'ドキュメントの保存先',
     storageModeLocal: 'ローカルのみ',
@@ -1305,6 +1314,9 @@ export const strings = {
     cloudDocsStale: '오프라인 — 마지막 목록 표시 중',
     cloudDocsPendingOne: '동기화 대기 중인 즐겨찾기 {n}개',
     cloudDocsPendingMany: '동기화 대기 중인 즐겨찾기 {n}개',
+    cloudPolicyAllowed: '인쇄: 허용',
+    cloudPolicyDenied: '인쇄: 차단',
+    cloudPolicyErrFailed: '인쇄 제한 저장에 실패했습니다. 다시 시도해 주세요.',
     // Document storage modes (Phase 7e)
     storageModeTitle: '문서 저장 위치',
     storageModeLocal: '로컬만',
@@ -1736,6 +1748,9 @@ export const strings = {
     cloudDocsStale: 'Hors ligne — dernière liste connue affichée',
     cloudDocsPendingOne: '{n} changement de favori en attente de synchronisation',
     cloudDocsPendingMany: '{n} changements de favori en attente de synchronisation',
+    cloudPolicyAllowed: 'Impression : autorisée',
+    cloudPolicyDenied: 'Impression : bloquée',
+    cloudPolicyErrFailed: "Échec de l'enregistrement de la restriction d'impression. Réessayez.",
     // Document storage modes (Phase 7e)
     storageModeTitle: 'Stockage des documents',
     storageModeLocal: 'Local uniquement',
@@ -2184,6 +2199,10 @@ export const strings = {
     cloudDocsStale: 'Offline — letzte bekannte Liste wird angezeigt',
     cloudDocsPendingOne: '{n} Sterne-Änderung wartet auf Synchronisierung',
     cloudDocsPendingMany: '{n} Sterne-Änderungen warten auf Synchronisierung',
+    cloudPolicyAllowed: 'Drucken: erlaubt',
+    cloudPolicyDenied: 'Drucken: blockiert',
+    cloudPolicyErrFailed:
+      'Speichern der Druckeinschränkung fehlgeschlagen. Bitte erneut versuchen.',
     // Document storage modes (Phase 7e)
     storageModeTitle: 'Dokumentspeicherung',
     storageModeLocal: 'Nur lokal',
@@ -2635,6 +2654,9 @@ export const strings = {
     cloudDocsStale: 'Sin conexión — se muestra la última lista conocida',
     cloudDocsPendingOne: '{n} cambio de destacado pendiente de sincronizar',
     cloudDocsPendingMany: '{n} cambios de destacado pendientes de sincronizar',
+    cloudPolicyAllowed: 'Imprimir: permitido',
+    cloudPolicyDenied: 'Imprimir: bloqueado',
+    cloudPolicyErrFailed: 'No se pudo guardar la restricción de impresión. Inténtalo de nuevo.',
     // Document storage modes (Phase 7e)
     storageModeTitle: 'Almacenamiento de documentos',
     storageModeLocal: 'Solo local',
@@ -3081,6 +3103,9 @@ export const strings = {
     cloudDocsStale: 'ออฟไลน์ — แสดงรายการล่าสุดที่ทราบ',
     cloudDocsPendingOne: 'การเปลี่ยนแปลงดาว {n} รายการรอซิงก์',
     cloudDocsPendingMany: 'การเปลี่ยนแปลงดาว {n} รายการรอซิงก์',
+    cloudPolicyAllowed: 'การพิมพ์: อนุญาต',
+    cloudPolicyDenied: 'การพิมพ์: ถูกบล็อก',
+    cloudPolicyErrFailed: 'บันทึกข้อจำกัดการพิมพ์ไม่สำเร็จ โปรดลองอีกครั้ง',
     // Document storage modes (Phase 7e)
     storageModeTitle: 'ที่เก็บเอกสาร',
     storageModeLocal: 'เครื่องนี้เท่านั้น',
@@ -3509,6 +3534,9 @@ export const strings = {
     cloudDocsStale: 'Offline — menampilkan daftar terakhir yang diketahui',
     cloudDocsPendingOne: '{n} perubahan bintang menunggu sinkronisasi',
     cloudDocsPendingMany: '{n} perubahan bintang menunggu sinkronisasi',
+    cloudPolicyAllowed: 'Cetak: diizinkan',
+    cloudPolicyDenied: 'Cetak: diblokir',
+    cloudPolicyErrFailed: 'Gagal menyimpan pembatasan cetak. Coba lagi.',
     // Document storage modes (Phase 7e)
     storageModeTitle: 'Penyimpanan dokumen',
     storageModeLocal: 'Hanya lokal',
@@ -3948,6 +3976,9 @@ export const strings = {
     cloudDocsStale: 'Нет сети — показан последний известный список',
     cloudDocsPendingOne: 'Изменение избранного ждёт синхронизации: {n}',
     cloudDocsPendingMany: 'Изменений избранного ждёт синхронизации: {n}',
+    cloudPolicyAllowed: 'Печать: разрешена',
+    cloudPolicyDenied: 'Печать: заблокирована',
+    cloudPolicyErrFailed: 'Не удалось сохранить ограничение печати. Повторите попытку.',
     // Document storage modes (Phase 7e)
     storageModeTitle: 'Хранилище документов',
     storageModeLocal: 'Только локально',
@@ -4386,6 +4417,9 @@ export const strings = {
     cloudDocsStale: 'غير متصل — يتم عرض آخر قائمة معروفة',
     cloudDocsPendingOne: '{n} تغيير مفضلة بانتظار المزامنة',
     cloudDocsPendingMany: '{n} تغييرات مفضلة بانتظار المزامنة',
+    cloudPolicyAllowed: 'الطباعة: مسموحة',
+    cloudPolicyDenied: 'الطباعة: محظورة',
+    cloudPolicyErrFailed: 'فشل حفظ قيد الطباعة. حاول مرة أخرى.',
     // Document storage modes (Phase 7e)
     storageModeTitle: 'تخزين المستندات',
     storageModeLocal: 'محلي فقط',
@@ -4813,6 +4847,9 @@ export const strings = {
     cloudDocsStale: 'Offline — exibindo a última lista conhecida',
     cloudDocsPendingOne: '{n} alteração de favorito aguardando sincronização',
     cloudDocsPendingMany: '{n} alterações de favorito aguardando sincronização',
+    cloudPolicyAllowed: 'Imprimir: permitido',
+    cloudPolicyDenied: 'Imprimir: bloqueado',
+    cloudPolicyErrFailed: 'Falha ao salvar a restrição de impressão. Tente novamente.',
     // Document storage modes (Phase 7e)
     storageModeTitle: 'Armazenamento de documentos',
     storageModeLocal: 'Somente local',
@@ -5248,6 +5285,9 @@ export const strings = {
     cloudDocsStale: "Offline — viene mostrato l'ultimo elenco noto",
     cloudDocsPendingOne: '{n} modifica ai preferiti in attesa di sincronizzazione',
     cloudDocsPendingMany: '{n} modifiche ai preferiti in attesa di sincronizzazione',
+    cloudPolicyAllowed: 'Stampa: consentita',
+    cloudPolicyDenied: 'Stampa: bloccata',
+    cloudPolicyErrFailed: 'Salvataggio della restrizione di stampa non riuscito. Riprova.',
     // Document storage modes (Phase 7e)
     storageModeTitle: 'Archiviazione dei documenti',
     storageModeLocal: 'Solo locale',
@@ -5682,6 +5722,9 @@ export const strings = {
     cloudDocsStale: 'Offline — pokazana jest ostatnia znana lista',
     cloudDocsPendingOne: '{n} zmiana gwiazdki oczekuje na synchronizację',
     cloudDocsPendingMany: '{n} zmiany gwiazdek oczekują na synchronizację',
+    cloudPolicyAllowed: 'Drukowanie: dozwolone',
+    cloudPolicyDenied: 'Drukowanie: zablokowane',
+    cloudPolicyErrFailed: 'Nie udało się zapisać ograniczenia drukowania. Spróbuj ponownie.',
     // Document storage modes (Phase 7e)
     storageModeTitle: 'Przechowywanie dokumentów',
     storageModeLocal: 'Tylko lokalnie',
@@ -6113,6 +6156,9 @@ export const strings = {
     cloudDocsStale: 'Offline — zobrazuje se poslední známý seznam',
     cloudDocsPendingOne: 'Čeká na synchronizaci {n} změna hvězdičky',
     cloudDocsPendingMany: 'Čeká na synchronizaci {n} změn hvězdiček',
+    cloudPolicyAllowed: 'Tisk: povolen',
+    cloudPolicyDenied: 'Tisk: blokován',
+    cloudPolicyErrFailed: 'Uložení omezení tisku se nezdařilo. Zkuste to znovu.',
     // Document storage modes (Phase 7e)
     storageModeTitle: 'Ukládání dokumentů',
     storageModeLocal: 'Jen místně',
@@ -6542,6 +6588,9 @@ export const strings = {
     cloudDocsStale: 'Offline — laatste bekende lijst wordt weergegeven',
     cloudDocsPendingOne: '{n} sterwijziging wacht op synchronisatie',
     cloudDocsPendingMany: '{n} sterwijzigingen wachten op synchronisatie',
+    cloudPolicyAllowed: 'Afdrukken: toegestaan',
+    cloudPolicyDenied: 'Afdrukken: geblokkeerd',
+    cloudPolicyErrFailed: 'Opslaan van de afdrukbeperking is mislukt. Probeer het opnieuw.',
     // Document storage modes (Phase 7e)
     storageModeTitle: 'Documentopslag',
     storageModeLocal: 'Alleen lokaal',
@@ -6973,6 +7022,9 @@ export const strings = {
     cloudDocsStale: 'Luar talian — memaparkan senarai terakhir yang diketahui',
     cloudDocsPendingOne: '{n} perubahan bintan menunggu segerak',
     cloudDocsPendingMany: '{n} perubahan bintan menunggu segerak',
+    cloudPolicyAllowed: 'Cetak: dibenarkan',
+    cloudPolicyDenied: 'Cetak: disekat',
+    cloudPolicyErrFailed: 'Gagal menyimpan sekatan cetakan. Cuba lagi.',
     // Document storage modes (Phase 7e)
     storageModeTitle: 'Storan dokumen',
     storageModeLocal: 'Setempat sahaja',
@@ -7407,6 +7459,9 @@ export const strings = {
     cloudDocsStale: 'לא מקוון — מוצגת הרשימה האחרונה שנודעה',
     cloudDocsPendingOne: 'שינוי כוכב אחד ממתין לסנכרון',
     cloudDocsPendingMany: '{n} שינויי כוכבים ממתינים לסנכרון',
+    cloudPolicyAllowed: 'הדפסה: מותרת',
+    cloudPolicyDenied: 'הדפסה: חסומה',
+    cloudPolicyErrFailed: 'שמירת הגבלת ההדפסה נכשלה. נסה שוב.',
     // Document storage modes (Phase 7e)
     storageModeTitle: 'אחסון מסמכים',
     storageModeLocal: 'מקומי בלבד',
@@ -7820,6 +7875,9 @@ export const strings = {
     cloudDocsStale: 'ऑफ़लाइन — अंतिम ज्ञात सूची दिख रही है',
     cloudDocsPendingOne: '{n} स्टार बदलाव सिंक होना बाकी है',
     cloudDocsPendingMany: '{n} स्टार बदलाव सिंक होने बाकी हैं',
+    cloudPolicyAllowed: 'प्रिंट: अनुमत',
+    cloudPolicyDenied: 'प्रिंट: अवरुद्ध',
+    cloudPolicyErrFailed: 'प्रिंट प्रतिबंध सहेजने में विफल। पुनः प्रयास करें।',
     // Document storage modes (Phase 7e)
     storageModeTitle: 'दस्तावेज़ स्टोरेज',
     storageModeLocal: 'केवल स्थानीय',
@@ -8248,6 +8306,9 @@ export const strings = {
     cloudDocsStale: '離線 — 顯示最近一次的清單',
     cloudDocsPendingOne: '{n} 個收藏變更待同步',
     cloudDocsPendingMany: '{n} 個收藏變更待同步',
+    cloudPolicyAllowed: '列印：允許',
+    cloudPolicyDenied: '列印：已禁止',
+    cloudPolicyErrFailed: '列印限制儲存失敗，請重試。',
     // Document storage modes (Phase 7e)
     storageModeTitle: '文件儲存位置',
     storageModeLocal: '僅本機',

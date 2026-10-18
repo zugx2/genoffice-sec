@@ -32,7 +32,10 @@
  * `PUT /documents/:id/starred` + `POST /documents/:id/opened` write them.
  * Metadata only — no bytes, no version bump, no `If-Match` (the documented
  * client policy on these fields is server last-write-wins, so an offline
- * star replays without conflict handling).
+ * star replays without conflict handling). Ruling 13 extends the same table
+ * (and discipline) with the per-file `printPolicy`: `GET /documents` items
+ * carry it and `PUT /documents/:id/print-policy` sets it (enum-validated,
+ * owner-scoped, version-bump-free).
  */
 
 import multipart from '@fastify/multipart'
@@ -52,6 +55,7 @@ import {
   type DocumentFileStore,
   type StoredBlob,
 } from '../storage/document-files.js'
+import { PRINT_POLICIES, type PrintPolicy } from '../storage/store.js'
 import { ifMatchVersion } from './if-match.js'
 import { requireSub } from './sub.js'
 
@@ -103,6 +107,14 @@ const starredBodySchema = {
   additionalProperties: false,
   // strict boolean: with ajv's coerceTypes off, 0/1/"true" are 400s
   properties: { starred: { type: 'boolean' } },
+} as const
+
+const printPolicyBodySchema = {
+  type: 'object',
+  required: ['printPolicy'],
+  additionalProperties: false,
+  // enum-validated: any other string (or a non-string) is a 400
+  properties: { printPolicy: { enum: [...PRINT_POLICIES] } },
 } as const
 
 // ── Field validation, shared by the multipart and raw channels ──
@@ -581,6 +593,27 @@ export const documentRoutes: FastifyPluginAsync = async (app: FastifyInstance): 
       const lastOpenedAt = app.store.markDocumentOpened(sub, request.params.documentId)
       if (lastOpenedAt === null) throw notFound()
       return { lastOpenedAt }
+    },
+  )
+
+  // Per-file print policy (Ruling 13). Same meta discipline as starred:
+  // owner-scoped, If-Match-free, version-bump-free (the policy is not part of
+  // the byte chain — gating it behind If-Match would make an offline policy
+  // toggle conflict with a concurrent edit for no benefit). The client
+  // enforcement story is documented in docs/cloud-storage.md ("Ruling 13").
+  app.put<{ Params: { documentId: string } }>(
+    '/documents/:documentId/print-policy',
+    {
+      preHandler: [app.authenticate],
+      schema: { params: documentIdParamSchema, body: printPolicyBodySchema },
+    },
+    async (request) => {
+      const sub = requireSub(request)
+      const policy = (request.body as { printPolicy: PrintPolicy }).printPolicy
+      if (!app.store.setDocumentPrintPolicy(sub, request.params.documentId, policy)) {
+        throw notFound()
+      }
+      return app.store.getDocument(sub, request.params.documentId)
     },
   )
 }

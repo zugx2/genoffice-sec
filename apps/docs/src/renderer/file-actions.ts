@@ -1241,6 +1241,12 @@ export async function exportPdf(ctx: FileActionContext, outPath?: string): Promi
           ctx.setStatus(t('appExportPdfCanceled'))
           return false
         }
+        // Ruling 13: a cloud-only document's export block must not enter the
+        // chunked retry path — surface the typed message and stop
+        if ((result as { reason?: string }).reason === 'export-blocked') {
+          ctx.setStatus(result.error)
+          return false
+        }
         // whole-document print job failed: retry the same pages in smaller jobs
         // and merge (the failed attempt already authorized result.path)
         const retryPath = outPath ?? result.path
@@ -1308,6 +1314,12 @@ export async function exportPdf(ctx: FileActionContext, outPath?: string): Promi
     }
     if (!result.error) {
       ctx.setStatus(t('appExportPdfCanceled'))
+      return false
+    }
+    // Ruling 13: a cloud-only document's export block must not defer to the
+    // preview retry path — surface the typed message and stop
+    if ((result as { reason?: string }).reason === 'export-blocked') {
+      ctx.setStatus(result.error)
       return false
     }
     // direct print of a heavy canvas failed: reroute through the preview so the

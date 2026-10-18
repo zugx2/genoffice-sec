@@ -254,6 +254,14 @@ Backend surface (Phase 7): per-`sub` isolated document endpoints —
 `GET/POST /documents` (list/create), `GET/PUT/DELETE /documents/:id`
 (download / version-checked update / delete),
 `GET /documents/:id/versions`; multipart uploads for large files.
+Phase 7d adds the document-meta surface: list items carry
+`starred`/`lastOpenedAt`/`printPolicy` and `PUT /documents/:id/starred`,
+`POST /documents/:id/opened`, and `PUT /documents/:id/print-policy` write
+them (owner-scoped, If-Match-free, version-bump-free — pure metadata).
+`printPolicy` (`'allow'` default | `'deny'`, Ruling 13) is the per-file
+print restriction the client enforces at print invocation for cloud-only
+documents; see `docs/cloud-storage.md` ("Ruling 13") for the enforcement
+model and its honest limits.
 
 ## Client integration map
 

@@ -12,6 +12,8 @@
  * - `cloud:toggle-starred` — `{cloudId, starred}`; offline-safe (queued in
  *   the registry, replayed on the next refresh);
  * - `cloud:mark-opened` — `{cloudId}`; the server-side recents stamp;
+ * - `cloud:set-print-policy` — `{cloudId, policy}`; the Ruling 13 per-file
+ *   print policy (optimistic cache edit, reverted when the write fails);
  * - `cloud:documents-changed` — push, broadcast to every webContents with
  *   `{reason}` only.
  *
@@ -45,6 +47,13 @@ const markOpenedArgs = z
   })
   .strict()
 
+const setPrintPolicyArgs = z
+  .object({
+    cloudId: cloudIdSchema,
+    policy: z.enum(['allow', 'deny']),
+  })
+  .strict()
+
 const listDocumentsArgs = z.union([z.undefined(), z.null()])
 
 const snapshotSchema = z
@@ -62,6 +71,7 @@ const snapshotSchema = z
           updatedAt: z.string(),
           starred: z.boolean(),
           lastOpenedAt: z.string().nullable(),
+          printPolicy: z.enum(['allow', 'deny']),
         })
         .strict(),
     ),
@@ -163,5 +173,12 @@ export function registerCloudDocsIpc(deps: CloudDocsIpcDeps = {}): void {
     if (live === undefined) throw new Error('cloud-documents registry is not registered')
     const { cloudId } = markOpenedArgs.parse(input)
     await live.markOpened(cloudId)
+  })
+
+  ipcMain.handle(CLOUD_DOCS_CHANNELS.setPrintPolicy, async (_event, input: unknown) => {
+    const live = registry
+    if (live === undefined) throw new Error('cloud-documents registry is not registered')
+    const { cloudId, policy } = setPrintPolicyArgs.parse(input)
+    return snapshotSchema.parse(await live.setPrintPolicy(cloudId, policy))
   })
 }

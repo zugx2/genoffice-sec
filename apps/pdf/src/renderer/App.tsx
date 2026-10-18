@@ -5040,10 +5040,19 @@ export default function App() {
   // currentPage only tracks scroll, so it can outlive a page deletion
   const printCurrentPage = Math.max(1, Math.min(currentPage, pageCount))
   const openPrintDlg = () => {
-    setPrintMode('all')
-    setPrintInput(String(printCurrentPage))
-    setPrintInvalid(false)
-    setPrintDlg(true)
+    void (async () => {
+      // Ruling 13: per-file print policy, re-checked at invocation — the
+      // toolbar button and ⌘P start here too, so this covers every entry
+      const gate = await window.pdfApi.printGate()
+      if (!gate.ok) {
+        opFailed(gate.error)
+        return
+      }
+      setPrintMode('all')
+      setPrintInput(String(printCurrentPage))
+      setPrintInvalid(false)
+      setPrintDlg(true)
+    })()
   }
 
   /** Print: save first (markups/forms/page ops all into the file), then reload from the file to render, avoiding a destroyed old doc */

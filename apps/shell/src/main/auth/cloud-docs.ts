@@ -30,7 +30,11 @@
  *   edit; the last delivered write simply wins;
  * - `markOpened()`: `POST /documents/:id/opened`, the server-side recents
  *   stamp. Fire-and-forget: a failure is logged, never surfaced — an
- *   unrecorded open only means a slightly older recents stamp.
+ *   unrecorded open only means a slightly older recents stamp;
+ * - `setPrintPolicy()`: `PUT /documents/:id/print-policy`, the per-file print
+ *   policy (Ruling 13). Optimistic like the star toggle but never queued — a
+ *   failed write reverts the cache and throws, so a governance change is
+ *   either delivered or visibly failed.
  *
  * The cache and the star queue persist to `userData/cloud-documents.json`,
  * tagged with a salted hash of the account's `sub` (never the sub itself) —
@@ -65,6 +69,7 @@ import type {
   CloudDocsChangeReason,
   CloudDocumentEntry,
   CloudDocumentsSnapshot,
+  CloudPrintPolicy,
 } from '../../shared/cloud-docs-api'
 import type { BackendClient } from './backend-client'
 
@@ -175,7 +180,7 @@ export class CloudDocumentsRegistry {
         this.reset(owner)
         return
       }
-      this.documents = Array.isArray(raw.documents) ? raw.documents : null
+      this.documents = Array.isArray(raw.documents) ? raw.documents.map(normalizeEntry) : null
       this.syncedAt = Number(raw.syncedAt) || 0
       this.pendingStars = Array.isArray(raw.pendingStars) ? raw.pendingStars : []
       this.stale = false // never synced reads as unavailable, not stale
@@ -485,6 +490,61 @@ export class CloudDocumentsRegistry {
     }
   }
 
+  /**
+   * Sets the per-file print policy (Ruling 13) of one document. Optimistic
+   * like `toggleStarred`, but NOT offline-queued: a governance toggle that
+   * silently sat in a queue could leave the owner believing printing is
+   * blocked while the server still says allow. The optimistic cache edit is
+   * reverted when the server write fails, and the error propagates so the
+   * renderer can surface it.
+   */
+  async setPrintPolicy(cloudId: string, policy: CloudPrintPolicy): Promise<CloudDocumentsSnapshot> {
+    this.ensureOwnerLoaded()
+    if (this.documents === null) {
+      // nothing cached: no optimistic view to edit and no document to address
+      throw new Error('document list is not loaded')
+    }
+    const entry = this.documents.find((d) => d.cloudId === cloudId)
+    if (entry === undefined) throw new Error('unknown document')
+    const before = entry.printPolicy
+    entry.printPolicy = policy
+    this.persist()
+    this.emitChange('refreshed')
+    let client: BackendClient | undefined
+    try {
+      client = await this.client()
+    } catch {
+      client = undefined
+    }
+    if (client === undefined) {
+      entry.printPolicy = before
+      this.persist()
+      this.emitChange('refreshed')
+      throw new Error('backend client unavailable')
+    }
+    try {
+      const response = await client.fetch(
+        `/documents/${encodeURIComponent(cloudId)}/print-policy`,
+        {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ printPolicy: policy }),
+        },
+      )
+      if (!response.ok) {
+        // a definitive 404 (document gone) still reverts: the row on screen
+        // is stale either way, and the next refresh will drop it
+        throw new Error(`print-policy write answered HTTP ${response.status}`)
+      }
+      return this.snapshot()
+    } catch (error) {
+      entry.printPolicy = before
+      this.persist()
+      this.emitChange('refreshed')
+      throw error instanceof Error ? error : new Error(String(error))
+    }
+  }
+
   // ── Queue helpers ───────────────────────────────────────────────────
 
   /** Appends the toggle, replacing any earlier one for the same document. */
@@ -565,5 +625,19 @@ function parseEntry(raw: unknown): CloudDocumentEntry {
     updatedAt: typeof r.updatedAt === 'string' ? r.updatedAt : '',
     starred: r.starred === true,
     lastOpenedAt: typeof r.lastOpenedAt === 'string' ? r.lastOpenedAt : null,
+    printPolicy: printPolicyOfRaw(r.printPolicy),
   }
+}
+
+/**
+ * Backfills `printPolicy` on entries persisted before Ruling 13 (and
+ * normalizes anything unexpected to the 'allow' default, mirroring the
+ * server's own reading of the column).
+ */
+function normalizeEntry(entry: CloudDocumentEntry): CloudDocumentEntry {
+  return { ...entry, printPolicy: printPolicyOfRaw(entry.printPolicy) }
+}
+
+function printPolicyOfRaw(raw: unknown): CloudPrintPolicy {
+  return raw === 'deny' ? 'deny' : 'allow'
 }
